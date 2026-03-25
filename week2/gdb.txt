@@ -1,0 +1,32 @@
+1	#include <stdio.h>
+2	#include <stdlib.h>
+3	
+4	long long plus(long long, long long);
+5	long long minus(long long, long long);
+6	
+7	int main(int argc, char* argv[]) {  
+8	  if (argc != 3) {
+9	    printf("Usage: %s <int> <int>\n", argv[0]);
+10	    return EXIT_FAILURE;
+Breakpoint 1 at 0x126a: file plus.c, line 2.
+Breakpoint 2 at 0x1250: file minus.c, line 2.
+Starting program: /home/taeyeong/SPL_ws/week2/w2.out 100 80 > stdout.txt
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+
+Breakpoint 1, plus (a=100, b=80) at plus.c:2
+2	    return a + b;
+3	}
+rax            0xb4                180
+main (argc=3, argv=0x7fffffffd7a8) at main.c:16
+16	  long long s = minus(a, b);
+
+Breakpoint 2, minus (a=100, b=80) at minus.c:2
+2	    return a-b;
+3	}
+rax            0x14                20
+main (argc=3, argv=0x7fffffffd7a8) at main.c:17
+17	  printf("%lld\n%lld\n", r, s);
+18	  return EXIT_SUCCESS;
+Continuing.
+[Inferior 1 (process 19513) exited normally]
