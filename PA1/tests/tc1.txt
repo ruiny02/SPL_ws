@@ -1,0 +1,21 @@
+ALADDIN:
+aladdin:
+unix
+jasmine aladdin
+aladdin jasmine
+here, here,
+a never had
+"i can't"
+"can't i"
+"A whole new world!"
+aladdin:*the
+the*aladdin
+believe
+I believe
+genie,
+magic carpet
+"magic carpet"
+magic*carpet
+love
+I believe in you
+PA1EXIT

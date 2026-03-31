@@ -1,0 +1,73 @@
+jasmine ice sons'
+lamp friend
+friend
+priests'
+score: moon guard
+cave cave
+"HELLO!	 aladdin"
+"WIDE-AWAKE Market pRiEsTs'"
+"wIdE-AwAkE 	Cave"
+"absent phrase"
+wide-awake*market
+jasmine*absent_2_11
+cave cave
+"wIsH	 rIvEr"
+wide-awake*priests'
+absent_2_15 wish
+wish*river
+wish*river
+absent_2_18 dream
+hello!*guard
+score:*moon
+cave
+cave
+moon castle
+hello!
+jasmine*magic
+cave*absent_2_26
+sons'
+"absent phrase"
+wish*hello!
+absent_2_30 carpet
+wide-awake
+i'm moon
+absent_2_33
+"mArKeT  Wide-Awake"
+absent_2_35
+river*wish
+priests' market wide-awake
+carpet
+"SCORE:  I'M"
+river can't wide-awake
+score:*moon
+moon
+can't
+cave*score:
+"CAVE	score:	MOON"
+moon i'm guard
+jasmine world? genie
+castle
+"absent phrase"
+sun*absent_2_50
+"aladdin  rIvEr"
+absent_2_52 genie
+absent_2_53
+"absent phrase"
+i*wish
+market*absent_2_56
+friend sons' aladdin
+friend
+friend*magic
+sons'
+"HELLO! 	SCORE:"
+"score:	i'm dReAm"
+"CAVE	 cAvE"
+"Market  Lamp"
+"absent phrase"
+absent_2_66
+jasmine wish
+magic*absent_2_68
+"jAsMiNe  Magic"
+"absent phrase"
+dream*absent_2_71
+PA1EXIT

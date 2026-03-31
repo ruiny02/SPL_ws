@@ -1,9 +1,11 @@
 #include "pa1.h"
 
+// Write a short error message to stderr.
 static int write_stderr(const char *message) {
     return write_full(2, message, cstr_len(message));
 }
 
+// Build the index, read queries, and print one result line per query.
 int main(int argc, char **argv) {
     int input_fd;
     Index *index;
@@ -89,6 +91,16 @@ int main(int argc, char **argv) {
             free(index);
             return 1;
         }
+        if (outbuf_flush(&stdout_buf) < 0) {
+            write_stderr("failed to flush stdout\n");
+            bytevec_free(&query);
+            query_scratch_free(&scratch);
+            index_free(index);
+            free(index);
+            return 1;
+        }
+        query_scratch_free(&scratch);
+        query_scratch_init(&scratch);
     }
 
     outbuf_flush(&stdout_buf);

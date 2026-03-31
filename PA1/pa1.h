@@ -14,6 +14,7 @@
 typedef uint32_t u32;
 typedef uint64_t u64;
 
+// Shared constants
 enum {
     PA1_READ_BUF_SIZE = 65536,
     PA1_WRITE_BUF_SIZE = 65536,
@@ -22,6 +23,7 @@ enum {
     PA1_LEXICON_SLOTS_INIT = 4096
 };
 
+// Shared dynamic buffers
 typedef struct {
     char *data;
     size_t len;
@@ -45,6 +47,7 @@ typedef struct {
     size_t cap;
 } U32Vec;
 
+// Buffered I/O helpers
 typedef struct {
     int fd;
     char buf[PA1_READ_BUF_SIZE];
@@ -58,6 +61,7 @@ typedef struct {
     size_t len;
 } OutBuf;
 
+// Search index records
 typedef struct {
     u32 word_id;
     u32 line_no;
@@ -70,6 +74,8 @@ typedef struct {
     u32 id;
     u32 hash;
     u32 bucket;
+    int cache_fd;
+    u32 cache_count;
     u32 next;
 } LexEntry;
 
@@ -81,6 +87,7 @@ typedef struct {
     size_t slot_count;
 } Lexicon;
 
+// Top-level runtime state
 typedef struct {
     int input_fd;
     int line_fd;
@@ -100,6 +107,7 @@ typedef struct {
     U32Vec lines_tmp;
 } QueryScratch;
 
+// util.c: byte helpers, ASCII helpers, and dynamic array utilities
 void copy_bytes(void *dst, const void *src, size_t len);
 void move_bytes(void *dst, const void *src, size_t len);
 size_t cstr_len(const char *s);
@@ -124,6 +132,7 @@ int u32vec_push(U32Vec *vec, u32 value);
 void u32vec_reset(U32Vec *vec);
 void u32vec_free(U32Vec *vec);
 
+// io.c: buffered input/output and temporary file helpers
 void line_reader_init(LineReader *reader, int fd);
 int line_reader_read_line(LineReader *reader, ByteVec *out, int *had_newline);
 
@@ -136,6 +145,7 @@ int write_full(int fd, const void *data, size_t len);
 int pread_full(int fd, void *data, size_t len, off_t offset);
 int create_temp_file(const char *tag);
 
+// index.c: lexicon management and on-disk index construction
 int lexicon_init(Lexicon *lexicon);
 void lexicon_free(Lexicon *lexicon);
 int lexicon_find_or_add(Lexicon *lexicon, const char *data, size_t len, u32 *word_id, u32 *bucket);
@@ -146,6 +156,7 @@ int index_build(Index *index);
 int index_read_line(Index *index, u32 line_no, ByteVec *line);
 void index_free(Index *index);
 
+// query.c: query scratch state and search dispatch
 void query_scratch_init(QueryScratch *scratch);
 void query_scratch_free(QueryScratch *scratch);
 int handle_query(Index *index, const char *query, size_t len, OutBuf *out, QueryScratch *scratch);

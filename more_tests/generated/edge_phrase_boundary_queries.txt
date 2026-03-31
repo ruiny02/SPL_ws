@@ -1,0 +1,5 @@
+"magic carpet"
+magic
+magic carpet
+magic*carpet
+PA1EXIT

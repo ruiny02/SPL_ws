@@ -1,5 +1,6 @@
 #include "pa1.h"
 
+// Generic callback type used while scanning occurrence records.
 typedef int (*OccConsumer)(const OccRecord *record, void *ctx);
 
 typedef struct {
@@ -23,10 +24,17 @@ typedef struct {
     u32 cached_line_no;
 } PhraseCtx;
 
+typedef struct {
+    OutBuf out;
+    u32 count;
+} CacheBuildCtx;
+
+// Print an empty result line for a query with no matches.
 static int emit_blank_line(OutBuf *out) {
     return outbuf_write_byte(out, '\n');
 }
 
+// Print one "line:start" match entry followed by a space.
 static int emit_line_ref(OutBuf *out, u32 line_no, u32 start_idx) {
     if (outbuf_write_u32(out, line_no) < 0) {
         return -1;
@@ -40,6 +48,7 @@ static int emit_line_ref(OutBuf *out, u32 line_no, u32 start_idx) {
     return outbuf_write_byte(out, ' ');
 }
 
+// Print one matching line number followed by a space.
 static int emit_line_no(OutBuf *out, u32 line_no) {
     if (outbuf_write_u32(out, line_no) < 0) {
         return -1;
@@ -47,6 +56,7 @@ static int emit_line_no(OutBuf *out, u32 line_no) {
     return outbuf_write_byte(out, ' ');
 }
 
+// Scan one bucket file and call the consumer for matching word records.
 static int scan_bucket_for_word(Index *index, u32 bucket, u32 word_id, OccConsumer consumer, void *ctx) {
     int fd = index->occ_fds[bucket];
     union {
@@ -96,16 +106,109 @@ static int scan_bucket_for_word(Index *index, u32 bucket, u32 word_id, OccConsum
     return carry == 0 ? 0 : -1;
 }
 
+// Append one occurrence record into a per-word cache file.
+static int cache_record_consumer(const OccRecord *record, void *ctx) {
+    CacheBuildCtx *state = (CacheBuildCtx *) ctx;
+    state->count += 1;
+    return outbuf_write_data(&state->out, record, sizeof(*record));
+}
+
+// Materialize one word's postings into a dedicated temp file on demand.
+static int ensure_word_cache(Index *index, u32 word_id, u32 bucket) {
+    LexEntry *entry = &index->lexicon.entries[word_id];
+    CacheBuildCtx cache;
+    int fd;
+
+    if (entry->cache_fd >= 0) {
+        return 0;
+    }
+
+    fd = create_temp_file("wcache");
+    if (fd < 0) {
+        return -1;
+    }
+
+    outbuf_init(&cache.out, fd);
+    cache.count = 0;
+    if (scan_bucket_for_word(index, bucket, word_id, cache_record_consumer, &cache) < 0 ||
+        outbuf_flush(&cache.out) < 0 ||
+        lseek(fd, 0, SEEK_SET) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    entry->cache_fd = fd;
+    entry->cache_count = cache.count;
+    return 0;
+}
+
+// Scan the dedicated cache file for one word.
+static int scan_cached_word(Index *index, u32 word_id, OccConsumer consumer, void *ctx) {
+    LexEntry *entry = &index->lexicon.entries[word_id];
+    union {
+        OccRecord records[1024];
+        char bytes[1024 * sizeof(OccRecord)];
+    } chunk;
+    size_t carry = 0;
+    int fd = entry->cache_fd;
+
+    if (fd < 0) {
+        return -1;
+    }
+    if (lseek(fd, 0, SEEK_SET) < 0) {
+        return -1;
+    }
+
+    while (1) {
+        size_t total;
+        size_t usable;
+        size_t count;
+        size_t i;
+        ssize_t got;
+
+        do {
+            got = read(fd, chunk.bytes + carry, sizeof(chunk.bytes) - carry);
+        } while (got < 0 && errno == EINTR);
+
+        if (got < 0) {
+            return -1;
+        }
+        if (got == 0) {
+            break;
+        }
+
+        total = carry + (size_t) got;
+        usable = (total / sizeof(OccRecord)) * sizeof(OccRecord);
+        count = usable / sizeof(OccRecord);
+
+        for (i = 0; i < count; ++i) {
+            if (consumer(&chunk.records[i], ctx) < 0) {
+                return -1;
+            }
+        }
+
+        carry = total - usable;
+        if (carry > 0) {
+            move_bytes(chunk.bytes, chunk.bytes + usable, carry);
+        }
+    }
+
+    return carry == 0 ? 0 : -1;
+}
+
+// Stream all single-word matches directly to the output buffer.
 static int stream_word_consumer(const OccRecord *record, void *ctx) {
     StreamWordCtx *state = (StreamWordCtx *) ctx;
     return emit_line_ref(state->out, record->line_no, record->start_idx);
 }
 
+// Collect full match records into a vector.
 static int collect_matches_consumer(const OccRecord *record, void *ctx) {
     CollectMatchesCtx *state = (CollectMatchesCtx *) ctx;
     return matchvec_push(state->matches, record->line_no, record->start_idx);
 }
 
+// Collect unique line numbers from sorted occurrence records.
 static int collect_lines_consumer(const OccRecord *record, void *ctx) {
     CollectLinesCtx *state = (CollectLinesCtx *) ctx;
     if (state->lines->len == 0 || state->lines->items[state->lines->len - 1] != record->line_no) {
@@ -114,6 +217,18 @@ static int collect_lines_consumer(const OccRecord *record, void *ctx) {
     return 0;
 }
 
+// Check whether a matched phrase ends at whitespace or line end.
+static int phrase_has_valid_end(const ByteVec *line_buf, u32 start_idx, size_t phrase_len) {
+    size_t end = (size_t) start_idx + phrase_len;
+
+    if (end == line_buf->len) {
+        return 1;
+    }
+
+    return is_word_sep(line_buf->data[end]);
+}
+
+// Verify a phrase candidate against the original line text.
 static int phrase_consumer(const OccRecord *record, void *ctx) {
     PhraseCtx *state = (PhraseCtx *) ctx;
 
@@ -131,10 +246,14 @@ static int phrase_consumer(const OccRecord *record, void *ctx) {
     if (!phrase_equal_bytes(state->line_buf->data + record->start_idx, state->phrase, state->phrase_len)) {
         return 0;
     }
+    if (!phrase_has_valid_end(state->line_buf, record->start_idx, state->phrase_len)) {
+        return 0;
+    }
 
     return emit_line_ref(state->out, record->line_no, record->start_idx);
 }
 
+// Initialize reusable scratch buffers for query processing.
 void query_scratch_init(QueryScratch *scratch) {
     scratch->line_buf.data = NULL;
     scratch->line_buf.len = 0;
@@ -156,6 +275,7 @@ void query_scratch_init(QueryScratch *scratch) {
     scratch->lines_tmp.cap = 0;
 }
 
+// Free all scratch buffers used during query processing.
 void query_scratch_free(QueryScratch *scratch) {
     bytevec_free(&scratch->line_buf);
     matchvec_free(&scratch->matches_a);
@@ -165,6 +285,7 @@ void query_scratch_free(QueryScratch *scratch) {
     u32vec_free(&scratch->lines_tmp);
 }
 
+// Print a list of line numbers followed by a newline.
 static int output_line_list(const U32Vec *lines, OutBuf *out) {
     size_t i;
 
@@ -177,22 +298,31 @@ static int output_line_list(const U32Vec *lines, OutBuf *out) {
     return emit_blank_line(out);
 }
 
+// Load all unique line numbers for one word into memory.
 static int load_unique_lines(Index *index, u32 word_id, u32 bucket, U32Vec *out) {
     CollectLinesCtx ctx;
 
     u32vec_reset(out);
     ctx.lines = out;
-    return scan_bucket_for_word(index, bucket, word_id, collect_lines_consumer, &ctx);
+    if (ensure_word_cache(index, word_id, bucket) < 0) {
+        return -1;
+    }
+    return scan_cached_word(index, word_id, collect_lines_consumer, &ctx);
 }
 
+// Load all occurrence records for one word into memory.
 static int load_matches(Index *index, u32 word_id, u32 bucket, MatchVec *out) {
     CollectMatchesCtx ctx;
 
     matchvec_reset(out);
     ctx.matches = out;
-    return scan_bucket_for_word(index, bucket, word_id, collect_matches_consumer, &ctx);
+    if (ensure_word_cache(index, word_id, bucket) < 0) {
+        return -1;
+    }
+    return scan_cached_word(index, word_id, collect_matches_consumer, &ctx);
 }
 
+// Intersect two sorted line-number lists.
 static int intersect_line_lists(const U32Vec *left, const U32Vec *right, U32Vec *out) {
     size_t i = 0;
     size_t j = 0;
@@ -216,6 +346,7 @@ static int intersect_line_lists(const U32Vec *left, const U32Vec *right, U32Vec 
     return 0;
 }
 
+// Handle a single-word query and print every occurrence.
 static int handle_single(Index *index, const char *query, size_t len, OutBuf *out) {
     StreamWordCtx ctx;
     u32 word_id;
@@ -229,13 +360,17 @@ static int handle_single(Index *index, const char *query, size_t len, OutBuf *ou
     }
 
     ctx.out = out;
-    if (scan_bucket_for_word(index, bucket, word_id, stream_word_consumer, &ctx) < 0) {
+    if (ensure_word_cache(index, word_id, bucket) < 0) {
+        return -1;
+    }
+    if (scan_cached_word(index, word_id, stream_word_consumer, &ctx) < 0) {
         return -1;
     }
 
     return emit_blank_line(out);
 }
 
+// Handle a quoted phrase query with exact spacing and order.
 static int handle_phrase(Index *index, const char *query, size_t len, OutBuf *out, QueryScratch *scratch) {
     PhraseCtx ctx;
     size_t word_end = 0;
@@ -267,13 +402,17 @@ static int handle_phrase(Index *index, const char *query, size_t len, OutBuf *ou
     ctx.phrase_len = len;
     ctx.cached_line_no = 0;
 
-    if (scan_bucket_for_word(index, bucket, word_id, phrase_consumer, &ctx) < 0) {
+    if (ensure_word_cache(index, word_id, bucket) < 0) {
+        return -1;
+    }
+    if (scan_cached_word(index, word_id, phrase_consumer, &ctx) < 0) {
         return -1;
     }
 
     return emit_blank_line(out);
 }
 
+// Parse a multi-word query into unique lexicon word ids.
 static int collect_query_words(Index *index, const char *query, size_t len, u32 *word_ids, u32 *buckets, size_t *count) {
     size_t pos = 0;
     size_t out_count = 0;
@@ -322,6 +461,7 @@ static int collect_query_words(Index *index, const char *query, size_t len, u32 
     return 1;
 }
 
+// Handle a multi-word query by intersecting matching line sets.
 static int handle_multi(Index *index, const char *query, size_t len, OutBuf *out, QueryScratch *scratch) {
     u32 word_ids[(PA1_QUERY_LIMIT / 2) + 1];
     u32 buckets[(PA1_QUERY_LIMIT / 2) + 1];
@@ -360,6 +500,7 @@ static int handle_multi(Index *index, const char *query, size_t len, OutBuf *out
     return output_line_list(current, out);
 }
 
+// Check whether a pattern query illegally contains spaces or tabs.
 static int has_space_or_tab(const char *data, size_t len) {
     size_t i;
 
@@ -372,6 +513,7 @@ static int has_space_or_tab(const char *data, size_t len) {
     return 0;
 }
 
+// Handle a word1*word2 pattern query on the same line in order.
 static int handle_pattern(Index *index, const char *query, size_t len, OutBuf *out, QueryScratch *scratch) {
     size_t star = 0;
     u32 left_id;
@@ -447,6 +589,7 @@ static int handle_pattern(Index *index, const char *query, size_t len, OutBuf *o
     return emit_blank_line(out);
 }
 
+// Dispatch one raw query to the correct search mode.
 int handle_query(Index *index, const char *query, size_t len, OutBuf *out, QueryScratch *scratch) {
     size_t spaces = 0;
     size_t i;

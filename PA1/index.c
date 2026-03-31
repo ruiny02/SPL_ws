@@ -1,5 +1,6 @@
 #include "pa1.h"
 
+// Rebuild the lexicon hash slots when the table grows.
 static int lexicon_rehash(Lexicon *lexicon, size_t next_slots) {
     u32 *slots;
     size_t i;
@@ -23,6 +24,7 @@ static int lexicon_rehash(Lexicon *lexicon, size_t next_slots) {
     return 0;
 }
 
+// Initialize the in-memory lexicon table.
 int lexicon_init(Lexicon *lexicon) {
     lexicon->entries = NULL;
     lexicon->count = 0;
@@ -32,10 +34,14 @@ int lexicon_init(Lexicon *lexicon) {
     return lexicon->slots == NULL ? -1 : 0;
 }
 
+// Free all lexicon memory and cached posting files.
 void lexicon_free(Lexicon *lexicon) {
     size_t i;
 
     for (i = 0; i < lexicon->count; ++i) {
+        if (lexicon->entries[i].cache_fd >= 0) {
+            close(lexicon->entries[i].cache_fd);
+        }
         free(lexicon->entries[i].text);
     }
     free(lexicon->entries);
@@ -48,6 +54,7 @@ void lexicon_free(Lexicon *lexicon) {
     lexicon->slot_count = 0;
 }
 
+// Grow the lexicon entry array when more words are added.
 static int lexicon_reserve_entries(Lexicon *lexicon, size_t needed) {
     size_t next_cap = lexicon->cap == 0 ? 256 : lexicon->cap;
     LexEntry *next_entries;
@@ -73,6 +80,7 @@ static int lexicon_reserve_entries(Lexicon *lexicon, size_t needed) {
     return 0;
 }
 
+// Look up a word in the lexicon hash table.
 static int lexicon_lookup(Lexicon *lexicon, const char *data, size_t len, u32 hash, u32 *entry_index) {
     u32 index = lexicon->slots[hash % lexicon->slot_count];
 
@@ -88,6 +96,7 @@ static int lexicon_lookup(Lexicon *lexicon, const char *data, size_t len, u32 ha
     return 0;
 }
 
+// Find a word or add it to the lexicon if it is new.
 int lexicon_find_or_add(Lexicon *lexicon, const char *data, size_t len, u32 *word_id, u32 *bucket) {
     u32 hash = hash_lower_bytes(data, len);
     u32 entry_index;
@@ -129,6 +138,8 @@ int lexicon_find_or_add(Lexicon *lexicon, const char *data, size_t len, u32 *wor
     entry->id = (u32) lexicon->count;
     entry->hash = hash;
     entry->bucket = hash % PA1_OCC_BUCKETS;
+    entry->cache_fd = -1;
+    entry->cache_count = 0;
     slot = hash % lexicon->slot_count;
     entry->next = lexicon->slots[slot];
     lexicon->slots[slot] = (u32) (lexicon->count + 1);
@@ -139,6 +150,7 @@ int lexicon_find_or_add(Lexicon *lexicon, const char *data, size_t len, u32 *wor
     return 0;
 }
 
+// Look up an existing word without creating a new lexicon entry.
 int lexicon_find_existing(Lexicon *lexicon, const char *data, size_t len, u32 *word_id, u32 *bucket) {
     u32 hash = hash_lower_bytes(data, len);
     u32 entry_index;
@@ -152,6 +164,7 @@ int lexicon_find_existing(Lexicon *lexicon, const char *data, size_t len, u32 *w
     return 1;
 }
 
+// Tokenize one line and append its word occurrences to bucket files.
 static int process_line(Index *index, const char *line, size_t len, u32 line_no) {
     size_t pos = 0;
 
@@ -191,6 +204,7 @@ static int process_line(Index *index, const char *line, size_t len, u32 line_no)
     return 0;
 }
 
+// Open the temporary files needed for line offsets and postings.
 int index_init(Index *index, int input_fd) {
     size_t i;
     u64 zero = 0;
@@ -231,6 +245,7 @@ int index_init(Index *index, int input_fd) {
     return 0;
 }
 
+// Stream the input file once and build the temporary indexes.
 int index_build(Index *index) {
     LineReader reader;
     ByteVec line;
@@ -281,10 +296,12 @@ int index_build(Index *index) {
     return 0;
 }
 
+// Read one stored line offset from the line-offset table.
 static int read_line_offset(Index *index, u32 slot, u64 *value) {
     return pread_full(index->line_fd, value, sizeof(*value), (off_t) slot * (off_t) sizeof(*value));
 }
 
+// Fetch a specific line back from the original input file.
 int index_read_line(Index *index, u32 line_no, ByteVec *line) {
     u64 start;
     u64 end;
@@ -324,6 +341,7 @@ int index_read_line(Index *index, u32 line_no, ByteVec *line) {
     return 0;
 }
 
+// Close files and release all index-owned resources.
 void index_free(Index *index) {
     size_t i;
 

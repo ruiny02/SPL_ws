@@ -1,5 +1,6 @@
 #include "pa1.h"
 
+// Write all requested bytes unless an unrecoverable error occurs.
 int write_full(int fd, const void *data, size_t len) {
     const char *ptr = (const char *) data;
 
@@ -18,6 +19,7 @@ int write_full(int fd, const void *data, size_t len) {
     return 0;
 }
 
+// Read exactly len bytes starting at a fixed file offset.
 int pread_full(int fd, void *data, size_t len, off_t offset) {
     char *ptr = (char *) data;
 
@@ -40,12 +42,14 @@ int pread_full(int fd, void *data, size_t len, off_t offset) {
     return 0;
 }
 
+// Initialize a buffered line reader.
 void line_reader_init(LineReader *reader, int fd) {
     reader->fd = fd;
     reader->pos = 0;
     reader->len = 0;
 }
 
+// Read one logical line without storing the trailing newline.
 int line_reader_read_line(LineReader *reader, ByteVec *out, int *had_newline) {
     bytevec_reset(out);
     *had_newline = 0;
@@ -88,11 +92,13 @@ int line_reader_read_line(LineReader *reader, ByteVec *out, int *had_newline) {
     }
 }
 
+// Initialize a buffered output writer.
 void outbuf_init(OutBuf *out, int fd) {
     out->fd = fd;
     out->len = 0;
 }
 
+// Flush buffered output to its file descriptor.
 int outbuf_flush(OutBuf *out) {
     if (out->len == 0) {
         return 0;
@@ -106,6 +112,7 @@ int outbuf_flush(OutBuf *out) {
     return 0;
 }
 
+// Append raw bytes to the buffered output writer.
 int outbuf_write_data(OutBuf *out, const void *data, size_t len) {
     const char *ptr = (const char *) data;
 
@@ -133,10 +140,12 @@ int outbuf_write_data(OutBuf *out, const void *data, size_t len) {
     return 0;
 }
 
+// Append a single byte to the buffered output writer.
 int outbuf_write_byte(OutBuf *out, char ch) {
     return outbuf_write_data(out, &ch, 1);
 }
 
+// Append an unsigned integer as decimal text.
 int outbuf_write_u32(OutBuf *out, u32 value) {
     char digits[16];
     size_t len = 0;
@@ -160,6 +169,7 @@ int outbuf_write_u32(OutBuf *out, u32 value) {
     return 0;
 }
 
+// Create and unlink a temporary file that stays open by descriptor only.
 int create_temp_file(const char *tag) {
     char path[64];
     const char *prefix = "/tmp/pa1-";
