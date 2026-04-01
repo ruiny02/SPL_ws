@@ -39,8 +39,9 @@ void lexicon_free(Lexicon *lexicon) {
     size_t i;
 
     for (i = 0; i < lexicon->count; ++i) {
-        if (lexicon->entries[i].cache_fd >= 0) {
-            close(lexicon->entries[i].cache_fd);
+        if (lexicon->entries[i].cache_path != NULL) {
+            unlink(lexicon->entries[i].cache_path);
+            free(lexicon->entries[i].cache_path);
         }
         free(lexicon->entries[i].text);
     }
@@ -138,8 +139,7 @@ int lexicon_find_or_add(Lexicon *lexicon, const char *data, size_t len, u32 *wor
     entry->id = (u32) lexicon->count;
     entry->hash = hash;
     entry->bucket = hash % PA1_OCC_BUCKETS;
-    entry->cache_fd = -1;
-    entry->cache_count = 0;
+    entry->cache_path = NULL;
     slot = hash % lexicon->slot_count;
     entry->next = lexicon->slots[slot];
     lexicon->slots[slot] = (u32) (lexicon->count + 1);

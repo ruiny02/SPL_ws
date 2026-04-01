@@ -74,8 +74,7 @@ typedef struct {
     u32 id;
     u32 hash;
     u32 bucket;
-    int cache_fd;
-    u32 cache_count;
+    char *cache_path;
     u32 next;
 } LexEntry;
 
@@ -143,6 +142,7 @@ int outbuf_write_byte(OutBuf *out, char ch);
 int outbuf_write_u32(OutBuf *out, u32 value);
 int write_full(int fd, const void *data, size_t len);
 int pread_full(int fd, void *data, size_t len, off_t offset);
+int create_named_temp_file(const char *tag, char *path, size_t path_cap);
 int create_temp_file(const char *tag);
 
 // index.c: lexicon management and on-disk index construction

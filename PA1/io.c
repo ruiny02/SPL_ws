@@ -169,27 +169,47 @@ int outbuf_write_u32(OutBuf *out, u32 value) {
     return 0;
 }
 
-// Create and unlink a temporary file that stays open by descriptor only.
-int create_temp_file(const char *tag) {
-    char path[64];
+// Build one temporary-file path from a fixed prefix, tag, and mkstemp suffix.
+static int build_temp_path(const char *tag, char *path, size_t path_cap) {
     const char *prefix = "/tmp/pa1-";
     const char *suffix = "-XXXXXX";
+    size_t prefix_len = cstr_len(prefix);
+    size_t tag_len = cstr_len(tag);
+    size_t suffix_len = cstr_len(suffix);
     size_t pos = 0;
     size_t i;
-    int fd;
 
-    for (i = 0; prefix[i] != '\0'; ++i) {
+    if (prefix_len + tag_len + suffix_len + 1 > path_cap) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    for (i = 0; i < prefix_len; ++i) {
         path[pos++] = prefix[i];
     }
-    for (i = 0; tag[i] != '\0'; ++i) {
+    for (i = 0; i < tag_len; ++i) {
         path[pos++] = tag[i];
     }
-    for (i = 0; suffix[i] != '\0'; ++i) {
+    for (i = 0; i < suffix_len; ++i) {
         path[pos++] = suffix[i];
     }
     path[pos] = '\0';
+    return 0;
+}
 
-    fd = mkstemp(path);
+// Create a temporary file and keep its path so callers may reopen it later.
+int create_named_temp_file(const char *tag, char *path, size_t path_cap) {
+    if (build_temp_path(tag, path, path_cap) < 0) {
+        return -1;
+    }
+    return mkstemp(path);
+}
+
+// Create and unlink a temporary file that stays open by descriptor only.
+int create_temp_file(const char *tag) {
+    char path[64];
+    int fd = create_named_temp_file(tag, path, sizeof(path));
+
     if (fd < 0) {
         return -1;
     }

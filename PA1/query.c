@@ -29,6 +29,9 @@ typedef struct {
     u32 count;
 } CacheBuildCtx;
 
+// Count how many words are present after trimming space and tab separators.
+static size_t count_query_words(const char *query, size_t len, size_t *single_start, size_t *single_len);
+
 // Print an empty result line for a query with no matches.
 static int emit_blank_line(OutBuf *out) {
     return outbuf_write_byte(out, '\n');
@@ -117,13 +120,16 @@ static int cache_record_consumer(const OccRecord *record, void *ctx) {
 static int ensure_word_cache(Index *index, u32 word_id, u32 bucket) {
     LexEntry *entry = &index->lexicon.entries[word_id];
     CacheBuildCtx cache;
+    char path[64];
+    char *stored_path;
+    size_t path_len;
     int fd;
 
-    if (entry->cache_fd >= 0) {
+    if (entry->cache_path != NULL) {
         return 0;
     }
 
-    fd = create_temp_file("wcache");
+    fd = create_named_temp_file("wcache", path, sizeof(path));
     if (fd < 0) {
         return -1;
     }
@@ -131,14 +137,25 @@ static int ensure_word_cache(Index *index, u32 word_id, u32 bucket) {
     outbuf_init(&cache.out, fd);
     cache.count = 0;
     if (scan_bucket_for_word(index, bucket, word_id, cache_record_consumer, &cache) < 0 ||
-        outbuf_flush(&cache.out) < 0 ||
-        lseek(fd, 0, SEEK_SET) < 0) {
+        outbuf_flush(&cache.out) < 0) {
+        unlink(path);
         close(fd);
         return -1;
     }
+    if (close(fd) < 0) {
+        unlink(path);
+        return -1;
+    }
 
-    entry->cache_fd = fd;
-    entry->cache_count = cache.count;
+    path_len = cstr_len(path);
+    stored_path = (char *) malloc(path_len + 1);
+    if (stored_path == NULL) {
+        unlink(path);
+        return -1;
+    }
+
+    copy_bytes(stored_path, path, path_len + 1);
+    entry->cache_path = stored_path;
     return 0;
 }
 
@@ -150,12 +167,17 @@ static int scan_cached_word(Index *index, u32 word_id, OccConsumer consumer, voi
         char bytes[1024 * sizeof(OccRecord)];
     } chunk;
     size_t carry = 0;
-    int fd = entry->cache_fd;
+    int status = 0;
+    int fd;
 
-    if (fd < 0) {
+    (void) index;
+
+    if (entry->cache_path == NULL) {
         return -1;
     }
-    if (lseek(fd, 0, SEEK_SET) < 0) {
+
+    fd = open(entry->cache_path, O_RDONLY);
+    if (fd < 0) {
         return -1;
     }
 
@@ -171,7 +193,8 @@ static int scan_cached_word(Index *index, u32 word_id, OccConsumer consumer, voi
         } while (got < 0 && errno == EINTR);
 
         if (got < 0) {
-            return -1;
+            status = -1;
+            break;
         }
         if (got == 0) {
             break;
@@ -183,8 +206,12 @@ static int scan_cached_word(Index *index, u32 word_id, OccConsumer consumer, voi
 
         for (i = 0; i < count; ++i) {
             if (consumer(&chunk.records[i], ctx) < 0) {
-                return -1;
+                status = -1;
+                break;
             }
+        }
+        if (status < 0) {
+            break;
         }
 
         carry = total - usable;
@@ -193,7 +220,13 @@ static int scan_cached_word(Index *index, u32 word_id, OccConsumer consumer, voi
         }
     }
 
-    return carry == 0 ? 0 : -1;
+    if (status == 0 && carry != 0) {
+        status = -1;
+    }
+    if (close(fd) < 0) {
+        status = -1;
+    }
+    return status;
 }
 
 // Stream all single-word matches directly to the output buffer.
@@ -383,6 +416,10 @@ static int handle_phrase(Index *index, const char *query, size_t len, OutBuf *ou
 
     query += 1;
     len -= 2;
+
+    if (len == 0 || is_word_sep(query[0]) || is_word_sep(query[len - 1]) || contains_char(query, len, '"')) {
+        return emit_blank_line(out);
+    }
 
     while (word_end < len && !is_word_sep(query[word_end])) {
         word_end += 1;
@@ -591,8 +628,9 @@ static int handle_pattern(Index *index, const char *query, size_t len, OutBuf *o
 
 // Dispatch one raw query to the correct search mode.
 int handle_query(Index *index, const char *query, size_t len, OutBuf *out, QueryScratch *scratch) {
-    size_t spaces = 0;
-    size_t i;
+    size_t single_start = 0;
+    size_t single_len = 0;
+    size_t word_count;
 
     matchvec_reset(&scratch->matches_a);
     matchvec_reset(&scratch->matches_b);
@@ -607,14 +645,41 @@ int handle_query(Index *index, const char *query, size_t len, OutBuf *out, Query
         return handle_pattern(index, query, len, out, scratch);
     }
 
-    for (i = 0; i < len; ++i) {
-        if (is_word_sep(query[i])) {
-            spaces += 1;
-        }
+    word_count = count_query_words(query, len, &single_start, &single_len);
+    if (word_count == 0) {
+        return emit_blank_line(out);
     }
-
-    if (spaces == 0) {
-        return handle_single(index, query, len, out);
+    if (word_count == 1) {
+        return handle_single(index, query + single_start, single_len, out);
     }
     return handle_multi(index, query, len, out, scratch);
+}
+
+static size_t count_query_words(const char *query, size_t len, size_t *single_start, size_t *single_len) {
+    size_t pos = 0;
+    size_t count = 0;
+
+    while (pos < len) {
+        size_t start;
+
+        while (pos < len && is_word_sep(query[pos])) {
+            pos += 1;
+        }
+        if (pos >= len) {
+            break;
+        }
+
+        start = pos;
+        while (pos < len && !is_word_sep(query[pos])) {
+            pos += 1;
+        }
+
+        if (count == 0 && single_start != NULL && single_len != NULL) {
+            *single_start = start;
+            *single_len = pos - start;
+        }
+        count += 1;
+    }
+
+    return count;
 }
