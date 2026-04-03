@@ -1,6 +1,0 @@
-I
-"word!"
-word
-"word"
-word*word?
-PA1EXIT

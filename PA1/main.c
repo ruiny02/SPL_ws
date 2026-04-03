@@ -9,10 +9,10 @@ static int write_stderr(const char *message) {
 int main(int argc, char **argv) {
     int input_fd;
     Index *index;
-    LineReader stdin_reader;
-    ByteVec query;
-    QueryScratch scratch;
-    OutBuf stdout_buf;
+    LineReader query_reader;
+    ByteVec query_buf;
+    QueryScratch query_state;
+    OutBuf out;
 
     if (argc != 2) {
         write_stderr("usage: ./pa1 <input-file>\n");
@@ -47,65 +47,64 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    query.data = NULL;
-    query.len = 0;
-    query.cap = 0;
-    query_scratch_init(&scratch);
-    line_reader_init(&stdin_reader, 0);
-    outbuf_init(&stdout_buf, 1);
+    query_buf.data = NULL;
+    query_buf.len = 0;
+    query_buf.cap = 0;
+    query_scratch_init(&query_state);
+    line_reader_init(&query_reader, 0);
+    outbuf_init(&out, 1);
 
     while (1) {
-        int had_newline;
-        int read_status = line_reader_read_line(&stdin_reader, &query, &had_newline);
+        int query_had_newline;
+        int query_status = line_reader_read_line(&query_reader, &query_buf, &query_had_newline);
 
-        if (read_status < 0) {
+        if (query_status < 0) {
             write_stderr("failed to read query\n");
-            outbuf_flush(&stdout_buf);
-            bytevec_free(&query);
-            query_scratch_free(&scratch);
+            outbuf_flush(&out);
+            bytevec_free(&query_buf);
+            query_scratch_free(&query_state);
             index_free(index);
             free(index);
             return 1;
         }
-        if (read_status == 0) {
+        if (query_status == 0) {
             break;
         }
-        if (query.len > PA1_QUERY_LIMIT) {
+        if (query_buf.len > QUERY_LIMIT) {
             write_stderr("query is too long\n");
-            outbuf_flush(&stdout_buf);
-            bytevec_free(&query);
-            query_scratch_free(&scratch);
+            outbuf_flush(&out);
+            bytevec_free(&query_buf);
+            query_scratch_free(&query_state);
             index_free(index);
             free(index);
             return 1;
         }
-        if (slice_equals_cstr(query.data, query.len, "PA1EXIT")) {
+        if (slice_equals_cstr(query_buf.data, query_buf.len, "PA1EXIT")) {
             break;
         }
-        if (handle_query(index, query.data, query.len, &stdout_buf, &scratch) < 0) {
+        if (handle_query(index, query_buf.data, query_buf.len, &out, &query_state) < 0) {
             write_stderr("failed to execute query\n");
-            outbuf_flush(&stdout_buf);
-            bytevec_free(&query);
-            query_scratch_free(&scratch);
+            outbuf_flush(&out);
+            bytevec_free(&query_buf);
+            query_scratch_free(&query_state);
             index_free(index);
             free(index);
             return 1;
         }
-        if (outbuf_flush(&stdout_buf) < 0) {
+        if (outbuf_flush(&out) < 0) {
             write_stderr("failed to flush stdout\n");
-            bytevec_free(&query);
-            query_scratch_free(&scratch);
+            bytevec_free(&query_buf);
+            query_scratch_free(&query_state);
             index_free(index);
             free(index);
             return 1;
         }
-        query_scratch_free(&scratch);
-        query_scratch_init(&scratch);
+        (void) query_had_newline;
     }
 
-    outbuf_flush(&stdout_buf);
-    bytevec_free(&query);
-    query_scratch_free(&scratch);
+    outbuf_flush(&out);
+    bytevec_free(&query_buf);
+    query_scratch_free(&query_state);
     index_free(index);
     free(index);
     return 0;

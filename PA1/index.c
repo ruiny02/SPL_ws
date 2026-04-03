@@ -12,10 +12,10 @@ static int lexicon_rehash(Lexicon *lexicon, size_t next_slots) {
 
     for (i = 0; i < lexicon->count; ++i) {
         LexEntry *entry = &lexicon->entries[i];
-        size_t slot = entry->hash % next_slots;
+        size_t slot_index = entry->hash % next_slots;
 
-        entry->next = slots[slot];
-        slots[slot] = (u32) (i + 1);
+        entry->next = slots[slot_index];
+        slots[slot_index] = (u32) (i + 1);
     }
 
     free(lexicon->slots);
@@ -29,7 +29,7 @@ int lexicon_init(Lexicon *lexicon) {
     lexicon->entries = NULL;
     lexicon->count = 0;
     lexicon->cap = 0;
-    lexicon->slot_count = PA1_LEXICON_SLOTS_INIT;
+    lexicon->slot_count = LEXICON_SLOTS_INIT;
     lexicon->slots = (u32 *) calloc(lexicon->slot_count, sizeof(u32));
     return lexicon->slots == NULL ? -1 : 0;
 }
@@ -101,8 +101,8 @@ static int lexicon_lookup(Lexicon *lexicon, const char *data, size_t len, u32 ha
 int lexicon_find_or_add(Lexicon *lexicon, const char *data, size_t len, u32 *word_id, u32 *bucket) {
     u32 hash = hash_lower_bytes(data, len);
     u32 entry_index;
-    size_t slot;
-    char *stored;
+    size_t slot_index;
+    char *stored_text;
     size_t i;
     LexEntry *entry;
 
@@ -123,26 +123,27 @@ int lexicon_find_or_add(Lexicon *lexicon, const char *data, size_t len, u32 *wor
         return -1;
     }
 
-    stored = (char *) malloc(len + 1);
-    if (stored == NULL) {
+    stored_text = (char *) malloc(len + 1);
+    if (stored_text == NULL) {
         return -1;
     }
 
     for (i = 0; i < len; ++i) {
-        stored[i] = ascii_lower(data[i]);
+        stored_text[i] = ascii_lower(data[i]);
     }
-    stored[len] = '\0';
+    stored_text[len] = '\0';
 
     entry = &lexicon->entries[lexicon->count];
-    entry->text = stored;
+    entry->text = stored_text;
     entry->len = (u32) len;
     entry->id = (u32) lexicon->count;
     entry->hash = hash;
-    entry->bucket = hash % PA1_OCC_BUCKETS;
+    entry->bucket = hash % OCC_BUCKETS;
     entry->cache_path = NULL;
-    slot = hash % lexicon->slot_count;
-    entry->next = lexicon->slots[slot];
-    lexicon->slots[slot] = (u32) (lexicon->count + 1);
+    entry->cache_count = 0;
+    slot_index = hash % lexicon->slot_count;
+    entry->next = lexicon->slots[slot_index];
+    lexicon->slots[slot_index] = (u32) (lexicon->count + 1);
     lexicon->count += 1;
 
     *word_id = entry->id;
@@ -223,7 +224,7 @@ int index_init(Index *index, int input_fd) {
     }
     outbuf_init(&index->line_out, index->line_fd);
 
-    for (i = 0; i < PA1_OCC_BUCKETS; ++i) {
+    for (i = 0; i < OCC_BUCKETS; ++i) {
         index->occ_fds[i] = create_temp_file("occ");
         if (index->occ_fds[i] < 0) {
             while (i > 0) {
@@ -247,48 +248,48 @@ int index_init(Index *index, int input_fd) {
 
 // Stream the input file once and build the temporary indexes.
 int index_build(Index *index) {
-    LineReader reader;
-    ByteVec line;
-    int read_status;
-    u64 offset = 0;
+    LineReader input_reader;
+    ByteVec line_buffer;
+    int line_status;
+    u64 next_line_offset = 0;
 
-    line.data = NULL;
-    line.len = 0;
-    line.cap = 0;
-    line_reader_init(&reader, index->input_fd);
+    line_buffer.data = NULL;
+    line_buffer.len = 0;
+    line_buffer.cap = 0;
+    line_reader_init(&input_reader, index->input_fd);
 
     while (1) {
         int had_newline = 0;
-        read_status = line_reader_read_line(&reader, &line, &had_newline);
-        if (read_status <= 0) {
+        line_status = line_reader_read_line(&input_reader, &line_buffer, &had_newline);
+        if (line_status <= 0) {
             break;
         }
 
-        offset += (u64) line.len + (u64) had_newline;
+        next_line_offset += (u64) line_buffer.len + (u64) had_newline;
         index->line_count += 1;
 
-        if (process_line(index, line.data, line.len, index->line_count) < 0) {
-            bytevec_free(&line);
+        if (process_line(index, line_buffer.data, line_buffer.len, index->line_count) < 0) {
+            bytevec_free(&line_buffer);
             return -1;
         }
-        if (outbuf_write_data(&index->line_out, &offset, sizeof(offset)) < 0) {
-            bytevec_free(&line);
+        if (outbuf_write_data(&index->line_out, &next_line_offset, sizeof(next_line_offset)) < 0) {
+            bytevec_free(&line_buffer);
             return -1;
         }
     }
 
-    if (read_status < 0) {
-        bytevec_free(&line);
+    if (line_status < 0) {
+        bytevec_free(&line_buffer);
         return -1;
     }
 
-    bytevec_free(&line);
+    bytevec_free(&line_buffer);
 
     if (outbuf_flush(&index->line_out) < 0) {
         return -1;
     }
-    for (read_status = 0; read_status < PA1_OCC_BUCKETS; ++read_status) {
-        if (outbuf_flush(&index->occ_out[read_status]) < 0) {
+    for (line_status = 0; line_status < OCC_BUCKETS; ++line_status) {
+        if (outbuf_flush(&index->occ_out[line_status]) < 0) {
             return -1;
         }
     }
@@ -297,8 +298,8 @@ int index_build(Index *index) {
 }
 
 // Read one stored line offset from the line-offset table.
-static int read_line_offset(Index *index, u32 slot, u64 *value) {
-    return pread_full(index->line_fd, value, sizeof(*value), (off_t) slot * (off_t) sizeof(*value));
+static int read_line_offset(Index *index, u32 offset_index, u64 *value) {
+    return pread_full(index->line_fd, value, sizeof(*value), (off_t) offset_index * (off_t) sizeof(*value));
 }
 
 // Fetch a specific line back from the original input file.
@@ -351,7 +352,7 @@ void index_free(Index *index) {
         index->line_fd = -1;
     }
 
-    for (i = 0; i < PA1_OCC_BUCKETS; ++i) {
+    for (i = 0; i < OCC_BUCKETS; ++i) {
         outbuf_flush(&index->occ_out[i]);
         if (index->occ_fds[i] >= 0) {
             close(index->occ_fds[i]);

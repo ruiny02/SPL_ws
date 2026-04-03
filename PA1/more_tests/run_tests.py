@@ -9,13 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
-PA1_DIR = ROOT / "PA1"
+PA1_DIR = Path(__file__).resolve().parents[1]
 BIN = PA1_DIR / "pa1"
-OUT_DIR = ROOT / "more_tests" / "generated"
+OUT_DIR = PA1_DIR / "more_tests" / "generated"
 SEED = 20260325
-RANDOM_CASES = 24
-RANDOM_QUERIES_PER_CASE = 72
+RANDOM_CASES = 36
+RANDOM_QUERIES_PER_CASE = 96
 
 
 @dataclass
@@ -53,10 +52,25 @@ def classify_query(query: str) -> str:
         return "phrase"
     if "*" in query:
         return "pattern"
-    parts = [part for part in query.split(" ") if part]
+    parts = split_query_words(query)
     if len(parts) > 1:
         return "multi"
     return "single"
+
+
+def split_query_words(query: str) -> list[str]:
+    words: list[str] = []
+    pos = 0
+    while pos < len(query):
+        while pos < len(query) and is_sep(query[pos]):
+            pos += 1
+        if pos >= len(query):
+            break
+        start = pos
+        while pos < len(query) and not is_sep(query[pos]):
+            pos += 1
+        words.append(query[start:pos])
+    return words
 
 
 def format_result(items: list[str]) -> str:
@@ -66,7 +80,10 @@ def format_result(items: list[str]) -> str:
 
 
 def solve_single(lines: list[str], query: str) -> str:
-    needle = normalize(query)
+    words = split_query_words(query)
+    if len(words) != 1:
+        return "\n"
+    needle = normalize(words[0])
     hits: list[str] = []
     for line_no, line in enumerate(lines, start=1):
         for token, start in tokenize_line(line):
@@ -76,7 +93,7 @@ def solve_single(lines: list[str], query: str) -> str:
 
 
 def solve_multi(lines: list[str], query: str) -> str:
-    wanted = {normalize(part) for part in query.split(" ") if part}
+    wanted = {normalize(part) for part in split_query_words(query)}
     hits: list[str] = []
     for line_no, line in enumerate(lines, start=1):
         present = {normalize(token) for token, _ in tokenize_line(line)}
@@ -91,6 +108,8 @@ def phrase_valid_end(line: str, end: int) -> bool:
 
 def solve_phrase(lines: list[str], query: str) -> str:
     phrase = query[1:-1]
+    if not phrase or is_sep(phrase[0]) or is_sep(phrase[-1]) or '"' in phrase:
+        return "\n"
     first_word_end = 0
     while first_word_end < len(phrase) and not is_sep(phrase[first_word_end]):
         first_word_end += 1
@@ -115,39 +134,30 @@ def solve_phrase(lines: list[str], query: str) -> str:
 
 
 def solve_pattern(lines: list[str], query: str) -> str:
+    if " " in query or "\t" in query:
+        return "\n"
+    if query.count("*") != 1:
+        return "\n"
     left, right = query.split("*", 1)
+    if not left or not right:
+        return "\n"
     left = normalize(left)
     right = normalize(right)
     hits: list[str] = []
     for line_no, line in enumerate(lines, start=1):
-        words = [normalize(token) for token, _ in tokenize_line(line)]
-        seen_left = False
+        words = [(normalize(token), start) for token, start in tokenize_line(line)]
         matched = False
-        for word in words:
-            if word == left:
-                seen_left = True
-            if seen_left and word == right and word != left:
-                matched = True
-                break
-            if seen_left and left == right and words.count(word) >= 2:
-                # Preserve the assignment interpretation used in the C solution:
-                # word*word requires a later occurrence of the same word.
-                occurrences_seen = 0
-                for probe in words:
-                    if probe == left:
-                        occurrences_seen += 1
-                        if occurrences_seen >= 2:
-                            matched = True
-                            break
-                break
-        if not matched and left == right:
-            seen = 0
-            for word in words:
-                if word == left:
-                    seen += 1
-                    if seen >= 2:
-                        matched = True
-                        break
+        first_left_start: int | None = None
+        last_right_start: int | None = None
+
+        for word, start in words:
+            if word == left and first_left_start is None:
+                first_left_start = start
+            if word == right:
+                last_right_start = start
+
+        if first_left_start is not None and last_right_start is not None and first_left_start < last_right_start:
+            matched = True
         if matched:
             hits.append(str(line_no))
     return format_result(hits)
@@ -283,6 +293,31 @@ def edge_cases() -> list[Case]:
             name="edge_punctuation",
             text="I I'm I! Ice\nword word! word?\n",
             queries=["I", "\"word!\"", "word", "\"word\"", "word*word?"],
+        ),
+        Case(
+            name="edge_query_spacing",
+            text="alpha\tbeta gamma\nalpha beta\ngamma\talpha\n",
+            queries=[" alpha", "alpha ", "\talpha\tbeta", "alpha\tbeta", "alpha  beta", "\" alpha\"", "\"alpha \""],
+        ),
+        Case(
+            name="edge_same_word_pattern",
+            text="echo echo\necho\necho\tmiddle\techo\nECHO echo\n",
+            queries=["echo*echo", "echo", "echo echo", "\"echo echo\""],
+        ),
+        Case(
+            name="edge_duplicate_words",
+            text="lamp lamp genie\nlamp genie\nlamp\n",
+            queries=["lamp lamp", "lamp genie genie", "lamp", "\"lamp lamp\"", "lamp*lamp"],
+        ),
+        Case(
+            name="edge_no_final_newline",
+            text="last line only\nmagic carpet\nfinal token",
+            queries=["final", "\"final token\"", "magic*carpet", "\"magic carpet\""],
+        ),
+        Case(
+            name="edge_long_line",
+            text=((" ".join(["alpha", "beta", "gamma", "delta", "alpha", "omega", "beta", "gamma"]) + " ") * 6).strip() + "\nshort line\n",
+            queries=["alpha", "alpha beta", "\"alpha beta gamma\"", "alpha*omega", "omega*gamma"],
         ),
     ]
 

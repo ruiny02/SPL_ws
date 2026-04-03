@@ -16,11 +16,11 @@ typedef uint64_t u64;
 
 // Shared constants
 enum {
-    PA1_READ_BUF_SIZE = 65536,
-    PA1_WRITE_BUF_SIZE = 65536,
-    PA1_OCC_BUCKETS = 256,
-    PA1_QUERY_LIMIT = 4096,
-    PA1_LEXICON_SLOTS_INIT = 4096
+    READ_BUF_SIZE = 65536,
+    WRITE_BUF_SIZE = 65536,
+    OCC_BUCKETS = 256,
+    QUERY_LIMIT = 4096,
+    LEXICON_SLOTS_INIT = 4096
 };
 
 // Shared dynamic buffers
@@ -50,14 +50,14 @@ typedef struct {
 // Buffered I/O helpers
 typedef struct {
     int fd;
-    char buf[PA1_READ_BUF_SIZE];
+    char buf[READ_BUF_SIZE];
     size_t pos;
     size_t len;
 } LineReader;
 
 typedef struct {
     int fd;
-    char buf[PA1_WRITE_BUF_SIZE];
+    char buf[WRITE_BUF_SIZE];
     size_t len;
 } OutBuf;
 
@@ -75,6 +75,7 @@ typedef struct {
     u32 hash;
     u32 bucket;
     char *cache_path;
+    u32 cache_count;
     u32 next;
 } LexEntry;
 
@@ -90,9 +91,9 @@ typedef struct {
 typedef struct {
     int input_fd;
     int line_fd;
-    int occ_fds[PA1_OCC_BUCKETS];
+    int occ_fds[OCC_BUCKETS];
     OutBuf line_out;
-    OutBuf occ_out[PA1_OCC_BUCKETS];
+    OutBuf occ_out[OCC_BUCKETS];
     Lexicon lexicon;
     u32 line_count;
 } Index;
@@ -158,6 +159,7 @@ void index_free(Index *index);
 
 // query.c: query scratch state and search dispatch
 void query_scratch_init(QueryScratch *scratch);
+void query_scratch_reset(QueryScratch *scratch);
 void query_scratch_free(QueryScratch *scratch);
 int handle_query(Index *index, const char *query, size_t len, OutBuf *out, QueryScratch *scratch);
 

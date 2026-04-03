@@ -7,12 +7,14 @@ import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
-BIN = ROOT / "PA1" / "pa1"
-INPUT = ROOT / "PA1" / "sample_input.txt"
+PA1_DIR = Path(__file__).resolve().parents[1]
+BIN = PA1_DIR / "pa1"
+INPUT = PA1_DIR / "sample_input.txt"
 
 
 def main() -> int:
+    subprocess.run(["make", "-C", str(PA1_DIR)], check=True)
+
     proc = subprocess.Popen(
         [str(BIN), str(INPUT)],
         stdin=subprocess.PIPE,

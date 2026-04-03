@@ -1,6 +1,0 @@
-alpha
-beta
-alpha beta
-"beta Beta"
-beta*beta
-PA1EXIT
