@@ -1,11 +1,12 @@
 #include <stdio.h>              // printf
 #include <stdlib.h>             // free
-#include <string.h>             // strtok_r, sprintf
+#include <string.h>             // strcmp, strchr, snprintf
 #include <sys/wait.h>           // waitpid
-#include <unistd.h>             // execv
+#include <unistd.h>             // execv, pipe, dup2, close
 #include <editline/readline.h>  // readline
 #include <editline/history.h>   // add_history
 #include <errno.h>              // errno, ERANGE, EINTR
+#include <fcntl.h>              // open
 
 #define MAX_ARGS 100
 
@@ -29,6 +30,21 @@ static void wait_for_all_children(void) {
 
   while (waitpid(-1, &status, 0) > 0) {
   }
+}
+
+static int wait_for_pid(pid_t pid) {
+  int status;
+
+  while (waitpid(pid, &status, 0) < 0) {
+    if (errno == EINTR) {
+      continue;
+    }
+
+    perror("waitpid");
+    return EVALUATE_ERROR;
+  }
+
+  return SUCCESS;
 }
 
 static int parse_exit_status(const char* text, int* status) {
@@ -74,9 +90,35 @@ static int handle_exit_command(char* args[]) {
   return READLINE_EXIT;
 }
 
+static void exec_program(char* args[]) {
+  int execvp_error;
+  int execv_error;
+
+  execvp(args[0], args);
+  execvp_error = errno;
+  execv_error = execvp_error;
+
+  if (strchr(args[0], '/') == NULL) {
+    size_t length = strlen(args[0]) + 3;
+    char path[length];
+
+    snprintf(path, sizeof(path), "./%s", args[0]);
+    execv(path, args);
+    execv_error = errno;
+  }
+
+  if (execv_error == ENOENT) {
+    fprintf(stderr, "%s: command not found\n", args[0]);
+    _exit(127);
+  }
+
+  errno = execv_error;
+  perror(args[0]);
+  _exit(EXIT_FAILURE);
+}
+
 static int execute_external_command(char* args[]) {
   pid_t pid = fork();
-  int status;
 
   if (pid < 0) {
     perror("fork");
@@ -84,46 +126,159 @@ static int execute_external_command(char* args[]) {
   }
 
   if (pid == 0) {
-    int execvp_error;
-    int execv_error;
-
-    execvp(args[0], args);
-    execvp_error = errno;
-    execv_error = execvp_error;
-
-    if (strchr(args[0], '/') == NULL) {
-      size_t length = strlen(args[0]) + 3;
-      char path[length];
-
-      snprintf(path, sizeof(path), "./%s", args[0]);
-      execv(path, args);
-      execv_error = errno;
-    }
-
-    if (execv_error == ENOENT) {
-      fprintf(stderr, "%s: command not found\n", args[0]);
-      _exit(127);
-    }
-
-    errno = execv_error;
-    perror(args[0]);
-    _exit(EXIT_FAILURE);
+    exec_program(args);
   }
 
-  while (waitpid(pid, &status, 0) < 0) {
-    if (errno == EINTR) {
-      continue;
-    }
+  return wait_for_pid(pid);
+}
 
-    perror("waitpid");
+static int execute_redirection_command(char* args[], int operator_index) {
+  int fd;
+  int flags;
+  int dup_target;
+  pid_t pid;
+
+  if (operator_index == 0 || args[operator_index + 1] == NULL || args[operator_index + 2] != NULL) {
+    fprintf(stderr, "syntax error\n");
     return EVALUATE_ERROR;
   }
 
-  return SUCCESS;
+  if (strcmp(args[operator_index], "<") == 0) {
+    flags = O_RDONLY;
+    dup_target = STDIN_FILENO;
+  } else if (strcmp(args[operator_index], ">") == 0) {
+    flags = O_WRONLY | O_CREAT | O_TRUNC;
+    dup_target = STDOUT_FILENO;
+  } else {
+    flags = O_WRONLY | O_CREAT | O_APPEND;
+    dup_target = STDOUT_FILENO;
+  }
+
+  pid = fork();
+  if (pid < 0) {
+    perror("fork");
+    return EVALUATE_ERROR;
+  }
+
+  if (pid == 0) {
+    if (strcmp(args[operator_index], "<") == 0) {
+      fd = open(args[operator_index + 1], flags);
+    } else {
+      fd = open(args[operator_index + 1], flags, 0666);
+    }
+
+    if (fd < 0) {
+      perror(args[operator_index + 1]);
+      _exit(EXIT_FAILURE);
+    }
+
+    if (dup2(fd, dup_target) < 0) {
+      perror("dup2");
+      close(fd);
+      _exit(EXIT_FAILURE);
+    }
+
+    close(fd);
+    args[operator_index] = NULL;
+    exec_program(args);
+  }
+
+  return wait_for_pid(pid);
 }
 
+static int execute_pipe_command(char* args[], int operator_index) {
+  int fd[2];
+  pid_t left_pid;
+  pid_t right_pid;
+  char* rhs[MAX_ARGS];
+  int rhs_index = 0;
+
+  if (operator_index == 0 || args[operator_index + 1] == NULL) {
+    fprintf(stderr, "syntax error\n");
+    return EVALUATE_ERROR;
+  }
+
+  for (int i = operator_index + 1; args[i] != NULL; i++) {
+    rhs[rhs_index++] = args[i];
+  }
+  rhs[rhs_index] = NULL;
+  args[operator_index] = NULL;
+
+  if (pipe(fd) < 0) {
+    perror("pipe");
+    return EVALUATE_ERROR;
+  }
+
+  left_pid = fork();
+  if (left_pid < 0) {
+    perror("fork");
+    close(fd[0]);
+    close(fd[1]);
+    return EVALUATE_ERROR;
+  }
+
+  if (left_pid == 0) {
+    if (dup2(fd[1], STDOUT_FILENO) < 0) {
+      perror("dup2");
+      _exit(EXIT_FAILURE);
+    }
+
+    close(fd[0]);
+    close(fd[1]);
+    exec_program(args);
+  }
+
+  right_pid = fork();
+  if (right_pid < 0) {
+    perror("fork");
+    close(fd[0]);
+    close(fd[1]);
+    wait_for_pid(left_pid);
+    return EVALUATE_ERROR;
+  }
+
+  if (right_pid == 0) {
+    if (dup2(fd[0], STDIN_FILENO) < 0) {
+      perror("dup2");
+      _exit(EXIT_FAILURE);
+    }
+
+    close(fd[0]);
+    close(fd[1]);
+    exec_program(rhs);
+  }
+
+  close(fd[0]);
+  close(fd[1]);
+
+  if (wait_for_pid(left_pid) != SUCCESS) {
+    wait_for_pid(right_pid);
+    return EVALUATE_ERROR;
+  }
+
+  return wait_for_pid(right_pid);
+}
+
+static int find_operator_index(char* args[]) {
+  int operator_index = -1;
+
+  for (int i = 0; args[i] != NULL; i++) {
+    if (strcmp(args[i], "<") == 0 || strcmp(args[i], ">") == 0 ||
+        strcmp(args[i], ">>") == 0 || strcmp(args[i], "|") == 0) {
+      if (operator_index >= 0) {
+        fprintf(stderr, "syntax error\n");
+        return -2;
+      }
+      operator_index = i;
+    }
+  }
+
+  return operator_index;
+}
 
 int evaluate(char* args[]) {
+  int operator_index;
+
   // In shell, there are two main types of commands: built-in commands (e.g., exit) and external commands (e.g., ls, echo, etc.).
 
   // Built-in commands are handled directly by the shell.
@@ -139,11 +294,24 @@ int evaluate(char* args[]) {
     return SUCCESS;
   }
 
-  if (strcmp(args[0], "exit") == 0) {
+  operator_index = find_operator_index(args);
+  if (operator_index == -2) {
+    return EVALUATE_ERROR;
+  }
+
+  if (operator_index < 0 && strcmp(args[0], "exit") == 0) {
     return handle_exit_command(args);
   }
 
-  return execute_external_command(args);
+  if (operator_index < 0) {
+    return execute_external_command(args);
+  }
+
+  if (strcmp(args[operator_index], "|") == 0) {
+    return execute_pipe_command(args, operator_index);
+  }
+
+  return execute_redirection_command(args, operator_index);
 }
 
 int main() {
@@ -185,17 +353,92 @@ int get_input(char** cmd) {
 }
 
 int parse_args(char* cmd, char* args[]) {
-  char* save_ptr;
-  char* ptr = strtok_r(cmd, " ", &save_ptr);
   int i = 0;
+  char* cursor = cmd;
 
-  while (ptr != NULL) {
+  while (*cursor != '\0') {
+    while (*cursor == ' ') {
+      *cursor = '\0';
+      cursor++;
+    }
+
+    if (*cursor == '\0') {
+      break;
+    }
+
     if (i >= MAX_ARGS - 1) {
       fprintf(stderr, "Error: Too many arguments\n");
       return PARSE_ARGS_ERROR;
     }
-    args[i++] = ptr;
-    ptr = strtok_r(NULL, " ", &save_ptr);
+
+    if (*cursor == '<') {
+      args[i++] = "<";
+      cursor++;
+      continue;
+    }
+
+    if (*cursor == '|') {
+      args[i++] = "|";
+      cursor++;
+      continue;
+    }
+
+    if (*cursor == '>') {
+      if (*(cursor + 1) == '>') {
+        args[i++] = ">>";
+        cursor += 2;
+      } else {
+        args[i++] = ">";
+        cursor++;
+      }
+      continue;
+    }
+
+    args[i++] = cursor;
+
+    while (*cursor != '\0' && *cursor != ' ' && *cursor != '<' && *cursor != '>' && *cursor != '|') {
+      cursor++;
+    }
+
+    if (*cursor == '\0') {
+      break;
+    }
+
+    if (*cursor == ' ') {
+      *cursor = '\0';
+      cursor++;
+      continue;
+    }
+
+    if (i >= MAX_ARGS - 1) {
+      fprintf(stderr, "Error: Too many arguments\n");
+      return PARSE_ARGS_ERROR;
+    }
+
+    if (*cursor == '<') {
+      *cursor = '\0';
+      args[i++] = "<";
+      cursor++;
+      continue;
+    }
+
+    if (*cursor == '|') {
+      *cursor = '\0';
+      args[i++] = "|";
+      cursor++;
+      continue;
+    }
+
+    if (*(cursor + 1) == '>') {
+      *cursor = '\0';
+      args[i++] = ">>";
+      cursor += 2;
+      continue;
+    }
+
+    *cursor = '\0';
+    args[i++] = ">";
+    cursor++;
   }
 
   args[i] = NULL;
