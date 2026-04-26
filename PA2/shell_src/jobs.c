@@ -76,12 +76,16 @@ status_t handle_job(Job* job, Jobs* jobs) {
 
       if (job->state == JOB_STOPPED) {
         add_job_to_table(job, jobs);
-        printf("pa2: Job %ld has stopped\n", job->id);
+        printf("pa2: Job %lu has stopped\n", (unsigned long) job->id);
       }
 
       tcsetpgrp(STDIN_FILENO, getpgid(0));
 
       status_t status = job->last_process->info.si_status;
+      if (job->last_process->info.si_code == CLD_KILLED ||
+          job->last_process->info.si_code == CLD_DUMPED) {
+        status = 128 + job->last_process->info.si_status;
+      }
 
       remove_foreground_job(jobs, job->state == JOB_DONE);
       return status;
@@ -97,8 +101,6 @@ status_t handle_job(Job* job, Jobs* jobs) {
 Process* wait_for_job_process(Job* job) {
   siginfo_t info;
   waitid(P_PGID, job->pgid, &info, WEXITED | WSTOPPED | WCONTINUED | WNOHANG);
-
-  print_process(job->first_process);
 
   Process* process = get_process(job->first_process, info.si_pid);
 
@@ -135,7 +137,10 @@ Job* find_job_by_id(Jobs* jobs, uint64_t id) {
   if (jobs == NULL)
     jobs = jobs_global;
 
-  if (id > MAX_JOBS)
+  /* Slot 0 is reserved for the temporary foreground job a single builtin
+   * runs under; treating it as a user-addressable id leaks the placeholder
+   * (id 0, associated_command NULL) into fg/bg lookups. */
+  if (id == 0 || id > MAX_JOBS)
     return NULL;
 
   return jobs->table[id];

@@ -6,7 +6,7 @@
 
 status_t run_cd(Command* command);
 status_t run_exit(Command* command, Jobs* jobs, status_t last_status);
-status_t run_pwd();
+status_t run_pwd(Command* command);
 status_t run_jobs(Jobs* jobs);
 
 status_t run_fg(Command* command, Jobs* jobs);

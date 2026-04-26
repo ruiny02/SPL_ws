@@ -171,9 +171,10 @@ void print_job(Job* job) {
   }
 
   printf(
-      "Job(id: %ld,\tstate: %s,\tnum_processes: %ld,\tpgid: %d,\n\t"
+      "Job(id: %lu,\tstate: %s,\tnum_processes: %lu,\tpgid: %d,\n\t"
       "first_process: %p,\tlast_process: %p,\tassociated_command: %s)\n",
-      job->id, job_state_to_string(job->state), job->num_processes, job->pgid,
+      (unsigned long) job->id, job_state_to_string(job->state),
+      (unsigned long) job->num_processes, job->pgid,
       (void*)job->first_process, (void*)job->last_process,
       job->associated_command ? job->associated_command : "NULL");
 }

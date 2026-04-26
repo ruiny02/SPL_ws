@@ -1,9 +1,27 @@
 // Do not use exec*!
-#include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h> // unlink()
+#include <sys/stat.h>
+#include <unistd.h>
+
+static int remove_path(const char* path) {
+  if (unlink(path) == 0) {
+    return 0;
+  }
+
+  if (errno == EISDIR || errno == EPERM) {
+    struct stat st;
+    if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+      fprintf(stderr, "pa2_rm: cannot remove '%s': Is a directory\n", path);
+      return 1;
+    }
+  }
+
+  fprintf(stderr, "pa2_rm: cannot remove '%s': %s\n", path, strerror(errno));
+  return 1;
+}
 
 /** 
 # Synopsis
@@ -28,7 +46,17 @@
   - Input: `mkdir foo; pa2_rm foo; rmdir foo`
   - Output: `pa2_rm: cannot remove ‘foo’: Is a directory`
 **/
-
 int main(int argc, char* argv[]) {
-    return EXIT_SUCCESS;
+  if (argc == 1) {
+    fprintf(stderr, "pa2_rm: missing operand\n");
+    return EXIT_FAILURE;
+  }
+
+  int status = 0;
+  for (int i = 1; i < argc; i++) {
+    if (remove_path(argv[i]) != 0) {
+      status = 1;
+    }
+  }
+  return status == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

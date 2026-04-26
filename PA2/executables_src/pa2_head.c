@@ -1,10 +1,73 @@
 // Do not use exec*!
-#include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
+static int parse_line_count(const char* value, size_t* count) {
+  char* end = NULL;
+  errno = 0;
+  unsigned long long parsed = strtoull(value, &end, 10);
+  if (errno != 0 || value[0] == '\0' || *end != '\0') {
+    fprintf(stderr, "pa2_head: invalid number of lines: '%s'\n", value);
+    return 1;
+  }
+  *count = (size_t) parsed;
+  return 0;
+}
+
+static FILE* open_input(const char* path) {
+  if (path == NULL || strcmp(path, "-") == 0) {
+    return stdin;
+  }
+
+  struct stat st;
+  if (stat(path, &st) == -1) {
+    fprintf(stderr, "pa2_head: cannot open '%s' for reading: %s\n", path,
+            strerror(errno));
+    return NULL;
+  }
+
+  if (S_ISDIR(st.st_mode)) {
+    fprintf(stderr, "pa2_head: error reading '%s': Is a directory\n", path);
+    return NULL;
+  }
+
+  FILE* fp = fopen(path, "r");
+  if (fp == NULL) {
+    fprintf(stderr, "pa2_head: cannot open '%s' for reading: %s\n", path,
+            strerror(errno));
+  }
+  return fp;
+}
+
+static int print_head(FILE* fp, const char* label, size_t line_count) {
+  if (line_count == 0) {
+    return 0;
+  }
+
+  size_t printed_lines = 0;
+  int ch;
+  while ((ch = fgetc(fp)) != EOF) {
+    if (fputc(ch, stdout) == EOF) {
+      fprintf(stderr, "pa2_head: write error: %s\n", strerror(errno));
+      return 1;
+    }
+    if (ch == '\n' && ++printed_lines >= line_count) {
+      break;
+    }
+  }
+
+  if (ferror(fp)) {
+    fprintf(stderr, "pa2_head: error reading '%s': %s\n", label,
+            strerror(errno));
+    return 1;
+  }
+
+  return 0;
+}
 
 /** 
 # Synopsis
@@ -30,7 +93,33 @@
   - Input: `touch foo; pa2_head foo –n foo; rm foo`
   - Output: `pa2_head: invalid number of lines: ‘foo’`
 **/
-
 int main(int argc, char* argv[]) {
-    return EXIT_SUCCESS;
+  size_t line_count = 10;
+  int opt;
+
+  opterr = 0;
+  while ((opt = getopt(argc, argv, "n:")) != -1) {
+    switch (opt) {
+      case 'n':
+        if (parse_line_count(optarg, &line_count) != 0) {
+          return EXIT_FAILURE;
+        }
+        break;
+      default:
+        fprintf(stderr, "pa2_head: invalid option -- '%c'\n", optopt);
+        return EXIT_FAILURE;
+    }
+  }
+
+  const char* path = (optind < argc) ? argv[optind] : NULL;
+  FILE* input = open_input(path);
+  if (input == NULL) {
+    return EXIT_FAILURE;
+  }
+
+  int status = print_head(input, path == NULL ? "-" : path, line_count);
+  if (input != stdin) {
+    fclose(input);
+  }
+  return status == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
