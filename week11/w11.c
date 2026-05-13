@@ -51,21 +51,38 @@ void single_threaded_matrix_multiplication(
 
 /*** Insert your own matrix & vector data, functions ***/
 
-// TODO: Implement modulo reduction
+static void checked_pthread_create(pthread_t* tid,
+                                   void* (*start_routine)(void*),
+                                   void* arg) {
+  int err = pthread_create(tid, NULL, start_routine, arg);
+  if (err != 0) {
+    fprintf(stderr, "pthread_create: %s\n", strerror(err));
+    exit(EXIT_FAILURE);
+  }
+}
+
+static void checked_pthread_join(pthread_t tid) {
+  int err = pthread_join(tid, NULL);
+  if (err != 0) {
+    fprintf(stderr, "pthread_join: %s\n", strerror(err));
+    exit(EXIT_FAILURE);
+  }
+}
+
 void* thread_modulo_reduction(void* arg) {
   thread_mod_reduc_data* data = (thread_mod_reduc_data*)arg;
   for (size_t i = 0; i < data->size; i++) {
-    // Limit the values to be in range [0, 9]
+    data->array[i] %= 10;
   }
   return NULL;
 }
 
-// TODO: Implement matrix-vector multiplication
 void* thread_matrix_vector_mult(void* arg) {
   thread_mvm_data* data = (thread_mvm_data*)arg;
   uint64_t sum = 0;
-  // TODO: Modify sum
-  // ...
+  for (size_t i = 0; i < data->size; i++) {
+    sum += data->matrix_row[i] * data->vector[i];
+  }
   data->result = sum;
   return NULL;
 }
@@ -100,29 +117,30 @@ int main(int argc, char* argv[]) {
   }
   getrandom(vector, col_size * sizeof(uint64_t), 0);
 
-  /*** Insert your code ***/
-
-  // TODO: Modify matrix & vector to be in range [0, 9] (digit)
   pthread_t vector_tid;
   thread_mod_reduc_data vector_data;
-  // TODO: Create vector thread
+  vector_data.array = vector;
+  vector_data.size = col_size;
+  checked_pthread_create(&vector_tid, thread_modulo_reduction, &vector_data);
 
-  // TODO: Handle matrix
   for (size_t batch_i = 0; batch_i * n_cores < row_size; batch_i++) {
     size_t batch_start = batch_i * n_cores,
            batch_end = batch_start + n_cores < row_size ? batch_start + n_cores
                                                         : row_size;
 
-    // TODO: Create threads
     for (size_t i = batch_start; i < batch_end; i++) {
+      t_mod_reduc_data_arr[i].array = matrix[i];
+      t_mod_reduc_data_arr[i].size = col_size;
+      checked_pthread_create(&tids[i], thread_modulo_reduction,
+                             &t_mod_reduc_data_arr[i]);
     }
 
-    // TODO: Join threads
     for (size_t i = batch_start; i < batch_end; i++) {
+      checked_pthread_join(tids[i]);
     }
   }
 
-  // TODO: Join vector thread
+  checked_pthread_join(vector_tid);
 
   free(t_mod_reduc_data_arr);
 
@@ -139,16 +157,21 @@ int main(int argc, char* argv[]) {
            batch_end = batch_start + n_cores < row_size ? batch_start + n_cores
                                                         : row_size;
 
-    // TODO: Create threads
     for (size_t i = batch_start; i < batch_end; i++) {
+      t_mvm_data_arr[i].vector = vector;
+      t_mvm_data_arr[i].matrix_row = matrix[i];
+      t_mvm_data_arr[i].size = col_size;
+      t_mvm_data_arr[i].result = 0;
+      checked_pthread_create(&tids[i], thread_matrix_vector_mult,
+                             &t_mvm_data_arr[i]);
     }
 
-    // TODO: Join threads
     for (size_t i = batch_start; i < batch_end; i++) {
+      checked_pthread_join(tids[i]);
     }
 
-    // TODO: Store result in result array
     for (size_t i = batch_start; i < batch_end; i++) {
+      result[i] = t_mvm_data_arr[i].result;
     }
   }
 
@@ -244,7 +267,7 @@ void fputs_vector(const char* filename,
                   size_t size,
                   vector_type vec_type) {
   switch (vec_type) {
-    case COLUMN:
+    case COLUMN: {
       uint64_t const** matrix = malloc(size * sizeof(uint64_t*));
       if (matrix == NULL) {
         perror("malloc");
@@ -256,6 +279,7 @@ void fputs_vector(const char* filename,
       fputs_matrix(filename, (const uint64_t* const*)matrix, size, 1);
       free(matrix);
       break;
+    }
     case ROW:
       fputs_matrix(filename,
                    (const uint64_t* const*)&(const uint64_t*[]){vector}, 1,
@@ -276,7 +300,7 @@ void validate_result() {
       execlp("cmp", "cmp", "-s", "result.txt", "answer.txt", NULL);
       perror("execlp");
       break;
-    default:
+    default: {
       int32_t status;
       if (wait(&status) == -1) {
         perror("wait");
@@ -295,6 +319,7 @@ void validate_result() {
       }
       fprintf(stderr, "Unknown error occurred!\n");
       break;
+    }
   }
   exit(EXIT_FAILURE);
 }

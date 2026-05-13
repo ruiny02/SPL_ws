@@ -3,12 +3,16 @@ CFLAGS=-Wall -Wextra -ggdb -std=gnu2x -pthread
 TARGET=w11
 TARGETS=$(TARGET) $(TARGET)_debug
 
-$(TARGET)_debug.o: CFLAGS += -DDEBUG
-
 all: $(TARGET) $(TARGET)_debug
 
-%_debug.o: %.c
+$(TARGET): $(TARGET).c
+	$(CC) $(CFLAGS) $< -o $@
+
+$(TARGET)_debug.o: $(TARGET).c
 	$(CC) $(CFLAGS) -DDEBUG -c $< -o $@
+
+$(TARGET)_debug: $(TARGET)_debug.o
+	$(CC) $(CFLAGS) $< -o $@
 
 .PHONY: all clean test
 
