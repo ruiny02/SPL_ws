@@ -52,6 +52,7 @@ typedef struct {
 
 int conn_fd;
 char username[MAXLINE];
+int joined_chat = 0;
 
 // Helper functions
 // You can remove these functions if you'd like
@@ -66,7 +67,7 @@ void get_username(char* username);
 /* Functions you might have to modify */
 
 void handle_input(int conn_fd, char* username) {
-  char buf[MAXLINE];
+  char buf[MAXLINE] = {0};
   ssize_t bytes_read;
 
   switch (bytes_read = read(STDIN_FILENO, buf, MAXLINE)) {
@@ -79,8 +80,15 @@ void handle_input(int conn_fd, char* username) {
       if (strncmp(buf, "/quit\n", 6) == 0)
         exit(EXIT_CODE_SUCCESS);
 
-      // TODO: Set up msg by copying username and message as well as setting the type, then send the message to the server
       message msg;
+      memset(&msg, 0, sizeof(msg));
+      msg.type = USER_MESSAGE;
+      strncpy(msg.username, username, sizeof(msg.username) - 1);
+
+      size_t message_len = (bytes_read < MAXLINE) ? (size_t)bytes_read
+                                                  : MAXLINE - 1;
+      memcpy(msg.message, buf, message_len);
+      msg.message[message_len] = '\0';
 
       SAFELY_RUN(write(conn_fd, (void*)&msg, sizeof(msg)),
                  EXIT_CODE_WRITE_FAILURE)
@@ -98,13 +106,27 @@ void handle_server_response(int conn_fd) {
       puts("Connection with the server has been terminated.");
       exit(EXIT_CODE_SERVER_DOWN);
     default:
-      // Print message depending on the type
-      switch (msg.type) {}
+      switch (msg.type) {
+      case NEW_USER:
+        printf("%s has joined the chat.\n", msg.username);
+        break;
+      case USER_LEFT:
+        printf("%s has left the chat.\n", msg.username);
+        break;
+      case USER_MESSAGE:
+        printf("<%s> %s", msg.username, msg.message);
+        if (strnlen(msg.message, MAXLINE) == 0 ||
+            msg.message[strnlen(msg.message, MAXLINE) - 1] != '\n') {
+          putchar('\n');
+        }
+        break;
+      }
       break;
   }
 }
 
 int main(int argc, char* argv[]) {
+  long port = get_port(argc, argv);
   struct sigaction sa;
   sa.sa_handler = handle_server_termination;
   sigemptyset(&sa.sa_mask);
@@ -122,19 +144,19 @@ int main(int argc, char* argv[]) {
   memset((char*)&socket_address, 0, sizeof(socket_address));
   socket_address.sin_family = AF_INET;
   socket_address.sin_addr = get_socket_address(argv[1]);
-  socket_address.sin_port = htons(get_port(argc, argv));
+  socket_address.sin_port = htons(port);
 
   SAFELY_RUN(connect(conn_fd, (struct sockaddr*)&socket_address,
                      sizeof(socket_address)),
              3)
 
-  // TODO: Send username to server
-  //       Remember that the server should notify each client
-  //       when a new user joins the chat room.
   message new_user_msg;
   memset(&new_user_msg, 0, sizeof(new_user_msg));
-
-  // END TODO
+  new_user_msg.type = NEW_USER;
+  strncpy(new_user_msg.username, username, sizeof(new_user_msg.username) - 1);
+  SAFELY_RUN(write(conn_fd, (void*)&new_user_msg, sizeof(new_user_msg)),
+             EXIT_CODE_WRITE_FAILURE)
+  joined_chat = 1;
 
   struct pollfd fds[1000];
   int ret;
@@ -167,9 +189,13 @@ void exit_handler(void) {
   strncpy(msg.username, username, sizeof(msg.username) - 1);
   msg.username[sizeof(msg.username) - 1] = '\0';
 
-  SAFELY_RUN(write(conn_fd, (void*)&msg, sizeof(msg)), EXIT_CODE_WRITE_FAILURE)
+  if (joined_chat) {
+    (void)write(conn_fd, (void*)&msg, sizeof(msg));
+  }
   puts("Bye!");
-  close(conn_fd);
+  if (conn_fd >= 0) {
+    close(conn_fd);
+  }
 }
 
 void sigint_handler(int sig) {
@@ -180,7 +206,7 @@ void sigint_handler(int sig) {
 
 void handle_server_termination(int sig) {
   if (sig == SIGPIPE) {
-    SAFELY_RUN(write(STDOUT_FILENO, "Server was terminated!\n", 24),
+    SAFELY_RUN(write(STDOUT_FILENO, "Server was terminated!\n", 23),
                EXIT_CODE_WRITE_FAILURE)
     exit(EXIT_CODE_SERVER_DOWN);
   }
@@ -227,19 +253,22 @@ struct in_addr get_socket_address(char* host) {
 
 void get_username(char* username) {
   printf("Enter your username: ");
-  size_t max_username = MAX_USERNAME;
+  fflush(stdout);
   memset(username, 0, MAXLINE);
 
-  long bytes_read = getline((char**)&username, &max_username, stdin);
-
-  if (bytes_read == -1) {
-    if (errno == 0) {
+  if (fgets(username, MAX_USERNAME, stdin) == NULL) {
+    if (feof(stdin)) {
       exit(EXIT_CODE_SUCCESS);
     }
 
-    perror("getline");
+    perror("fgets");
     exit(EXIT_CODE_GETLINE_FAILURE);
   }
 
-  username[bytes_read - 1] = '\0';
+  if (strchr(username, '\n') == NULL) {
+    int ch;
+    while ((ch = getchar()) != '\n' && ch != EOF) {}
+  }
+
+  username[strcspn(username, "\n")] = '\0';
 }

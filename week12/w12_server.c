@@ -56,6 +56,10 @@ void exit_handler(void);
 void sigint_handler(int sig);
 long get_port(int argc, char* argv[]);
 int create_listening_socket(long port);
+void broadcast_message(message msg,
+                       nfds_t sender_index,
+                       struct pollfd* fds,
+                       nfds_t nfds);
 
 /* Functions you might have to modify */
 
@@ -64,14 +68,15 @@ int create_listening_socket(long port);
 void handle_new_connection(struct pollfd* fds, nfds_t* nfds) {
   int conn_fd;
   struct sockaddr_in conn_address;
-  int conn_address_len = sizeof(conn_address);
+  socklen_t conn_address_len = sizeof(conn_address);
 
   SAFELY_RUN(conn_fd = accept(listenfd, (struct sockaddr*)&conn_address,
-                              (socklen_t*)&conn_address_len),
+                              &conn_address_len),
              EXIT_CODE_ACCEPT_FAILURE)
 
   fds[*nfds].fd = conn_fd;
   fds[*nfds].events = POLLIN;
+  fds[*nfds].revents = 0;
   (*nfds)++;
 }
 
@@ -80,15 +85,40 @@ void handle_disconnection(nfds_t i,
                           struct pollfd* fds,
                           nfds_t* nfds,
                           size_t* n_clients) {
-    // TODO: Close the fd and update the fds array so that it doesn't include the closed fd
+  close(fds[i].fd);
 
-    // END TODO
-    if (*nfds != 0)
+  for (nfds_t j = i; j + 1 < *nfds; j++) {
+    fds[j] = fds[j + 1];
+  }
+
+  if (*nfds != 0) {
     (*nfds)--;
+    fds[*nfds] = (struct pollfd){.fd = -1, .events = 0, .revents = 0};
+  }
+
+  if (*n_clients != 0) {
+    (*n_clients)--;
+  }
+
+  printf("%s has left the chat. %zu active user%s.\n", username, *n_clients,
+         (*n_clients == 1) ? "" : "s");
 }
 
 
-// TODO: Should send the message to every client
+void broadcast_message(message msg,
+                       nfds_t sender_index,
+                       struct pollfd* fds,
+                       nfds_t nfds) {
+  for (nfds_t i = 1; i < nfds; i++) {
+    if (i == sender_index) {
+      continue;
+    }
+
+    SAFELY_RUN(write(fds[i].fd, (void*)&msg, sizeof(msg)),
+               EXIT_CODE_WRITE_FAILURE)
+  }
+}
+
 void handle_client_data(nfds_t i,
                         struct pollfd* fds,
                         nfds_t* nfds,
@@ -99,7 +129,7 @@ void handle_client_data(nfds_t i,
 
   if ((n = read(fds[i].fd, (void*)&msg, sizeof(msg))) > 0) {
     if (msg.type != NEW_USER && msg.type != USER_MESSAGE && msg.type != USER_LEFT) return;
-    broadcast_message(msg, i, fds, nfds);
+    broadcast_message(msg, i, fds, *nfds);
 
     switch (msg.type) {
     case NEW_USER:
@@ -107,7 +137,6 @@ void handle_client_data(nfds_t i,
         printf("%s has joined the chat. %zu active user%s.\n", msg.username, (*n_clients), (*n_clients == 1) ? "" : "s");
         break;
     case USER_LEFT:
-        if (*n_clients == 0) break;
         handle_disconnection(i, msg.username, fds, nfds, n_clients);
         break;
     case USER_MESSAGE:
@@ -127,6 +156,7 @@ void handle_client_data(nfds_t i,
 int main(int argc, char* argv[]) {
   long port = get_port(argc, argv);
   signal(SIGINT, sigint_handler);
+  signal(SIGPIPE, SIG_IGN);
 
   listenfd = create_listening_socket(port);
 

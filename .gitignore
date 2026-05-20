@@ -2,6 +2,7 @@
 docs/
 *.zst
 *.o
+*.tzst
 
 /PA1/pa1
 /PA1/more_tests/generated/
