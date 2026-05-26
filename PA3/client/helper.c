@@ -85,6 +85,8 @@ ParsingError parse_request(Request* request,
       }
     } else if (request->action == ACTION_EXIT || request->action == ACTION_CLEAR_SCREEN) {
       // no-op
+    } else if (request->action == ACTION_QUERY) {
+      // query does not require an active user
     } else {
       if (active_user == nullptr || *active_user == nullptr) {
         HANDLE_PARSING_ERROR(PARSING_NOT_LOGGED_IN, "User is not logged in!");

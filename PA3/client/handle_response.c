@@ -23,7 +23,7 @@ LoginErrorCode handle_login_response(const Request* request,
             request->username);
       break;
     case LOGIN_ERROR_ACTIVE_CLIENT:
-      fprintf(stderr, "Client is already serving user %s!\n ", *active_user);
+      fprintf(stderr, "Client is already serving user %s!\n", *active_user);
       break;
     case LOGIN_ERROR_INCORRECT_PASSWORD:
       fprintf(stderr, "User %s provided incorrect password!\n", request->username);
@@ -208,7 +208,5 @@ int32_t handle_response(Action action,
       return -1;
   }
 
-  if (response->data != nullptr) {
-    free(response->data);
-  }
+  return -1;
 }

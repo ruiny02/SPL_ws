@@ -27,19 +27,160 @@ ssize_t safe_read(int32_t fd, void* buf, size_t count);
 
 /** ------ END ALREADY IMPLEMENTED HELPER FUNCTIONS ------ **/
 
+static void deactivate_user(Users* users, const char* username) {
+  if (username == nullptr) {
+    return;
+  }
+
+  pthread_mutex_lock(&users->array_mutex);
+  pa3_uid_t uid = find_user(users, username);
+  if (uid < 0) {
+    pthread_mutex_unlock(&users->array_mutex);
+    return;
+  }
+
+  pthread_mutex_lock(&users->user_mutex[uid]);
+  pthread_mutex_unlock(&users->array_mutex);
+  users->array[uid].logged_in = false;
+  pthread_mutex_unlock(&users->user_mutex[uid]);
+}
+
+static ssize_t find_fd_in_pollset(PollSet* poll_set, int32_t fd) {
+  for (size_t i = 0; i < poll_set->size; i++) {
+    if (poll_set->set[i].fd == fd) {
+      return (ssize_t)i;
+    }
+  }
+  return -1;
+}
+
+static bool receive_request(int32_t fd, Request* request) {
+  default_request(request);
+
+  ssize_t n_read = safe_read(fd, &request->action, sizeof(request->action));
+  if (n_read == 0) {
+    return false;
+  }
+  if (n_read != (ssize_t)sizeof(request->action)) {
+    return false;
+  }
+  if (safe_read(fd, &request->username_length,
+                sizeof(request->username_length)) !=
+      (ssize_t)sizeof(request->username_length)) {
+    return false;
+  }
+  if (safe_read(fd, &request->data_size, sizeof(request->data_size)) !=
+      (ssize_t)sizeof(request->data_size)) {
+    return false;
+  }
+
+  if (request->username_length > 0) {
+    request->username = calloc(request->username_length + 1, sizeof(char));
+    if (request->username == nullptr) {
+      perror("calloc");
+      exit(EXIT_FAILURE);
+    }
+    if (safe_read(fd, request->username, request->username_length) !=
+        (ssize_t)request->username_length) {
+      return false;
+    }
+  }
+
+  if (request->data_size > 0) {
+    request->data = calloc(request->data_size + 1, sizeof(char));
+    if (request->data == nullptr) {
+      perror("calloc");
+      exit(EXIT_FAILURE);
+    }
+    if (safe_read(fd, request->data, request->data_size) !=
+        (ssize_t)request->data_size) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+static bool send_response(int32_t fd, const Response* response) {
+  if (safe_write(fd, &response->code, sizeof(response->code)) !=
+      (ssize_t)sizeof(response->code)) {
+    return false;
+  }
+  if (safe_write(fd, &response->data_size, sizeof(response->data_size)) !=
+      (ssize_t)sizeof(response->data_size)) {
+    return false;
+  }
+  if (response->data_size > 0 &&
+      safe_write(fd, response->data, response->data_size) !=
+          (ssize_t)response->data_size) {
+    return false;
+  }
+  return true;
+}
+
 // Use pthread_mutex_lock when accessing 'PollSet'
 void add_to_pollset(PollSet* poll_set,
                     int32_t notification_fd,
                     int32_t connfd) {
-  // ???
+  pthread_mutex_lock(&poll_set->mutex);
+  if (poll_set->size >= CLIENTS_PER_THREAD) {
+    pthread_mutex_unlock(&poll_set->mutex);
+    close(connfd);
+    return;
+  }
+
+  size_t i = poll_set->size;
+  poll_set->set[i].fd = connfd;
+  poll_set->set[i].events = POLLIN;
+  poll_set->set[i].revents = 0;
+  poll_set->active_users[i] = nullptr;
+  poll_set->size++;
+  pthread_mutex_unlock(&poll_set->mutex);
   notify_pollset(notification_fd);
-  // ???
 }
 
 // This function is called within thread_func.
 // Assuming you have already obtained the lock in thread_func, you do not need to lock the mutex here.
 void remove_from_pollset(ThreadData* data, size_t* i_ptr) {
-  // ???
+  PollSet* poll_set = data->poll_set;
+  size_t i = *i_ptr;
+  if (i >= poll_set->size) {
+    return;
+  }
+
+  if (poll_set->active_users[i] != nullptr) {
+    deactivate_user(data->users, poll_set->active_users[i]);
+    free((void*)poll_set->active_users[i]);
+    poll_set->active_users[i] = nullptr;
+  }
+
+  close(poll_set->set[i].fd);
+
+  size_t last = poll_set->size - 1;
+  if (i != last) {
+    poll_set->set[i] = poll_set->set[last];
+    poll_set->active_users[i] = poll_set->active_users[last];
+  }
+
+  poll_set->set[last].fd = -1;
+  poll_set->set[last].events = 0;
+  poll_set->set[last].revents = 0;
+  poll_set->active_users[last] = nullptr;
+  poll_set->size--;
+
+  if (*i_ptr > 0) {
+    (*i_ptr)--;
+  }
+}
+
+static void remove_fd_from_pollset(ThreadData* data, int32_t fd) {
+  pthread_mutex_lock(&data->poll_set->mutex);
+  ssize_t i = find_fd_in_pollset(data->poll_set, fd);
+  if (i >= 0) {
+    size_t index = (size_t)i;
+    remove_from_pollset(data, &index);
+  }
+  pthread_mutex_unlock(&data->poll_set->mutex);
 }
 
 // You have to poll the poll_set. When there is a file that is ready to be read,
@@ -50,7 +191,79 @@ void remove_from_pollset(ThreadData* data, size_t* i_ptr) {
 void* thread_func(void* arg) {
   ThreadData* data = (ThreadData*)arg;
   while (!sigint_received) {
-    // ???
+    struct pollfd local_set[CLIENTS_PER_THREAD];
+    nfds_t local_size;
+
+    pthread_mutex_lock(&data->poll_set->mutex);
+    local_size = (nfds_t)data->poll_set->size;
+    memcpy(local_set, data->poll_set->set,
+           sizeof(struct pollfd) * data->poll_set->size);
+    pthread_mutex_unlock(&data->poll_set->mutex);
+
+    int32_t poll_result = poll(local_set, local_size, -1);
+    if (poll_result < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      perror("poll");
+      break;
+    }
+
+    for (nfds_t i = 0; i < local_size && poll_result > 0; i++) {
+      if (local_set[i].revents == 0) {
+        continue;
+      }
+      poll_result--;
+
+      if (local_set[i].fd == data->pipe_out_fd) {
+        char buffer[64];
+        ssize_t n_read = read(data->pipe_out_fd, buffer, sizeof(buffer));
+        if (n_read == 0 && sigint_received) {
+          break;
+        }
+        continue;
+      }
+
+      int32_t fd = local_set[i].fd;
+      if (local_set[i].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+        remove_fd_from_pollset(data, fd);
+        continue;
+      }
+
+      Request request;
+      if (!receive_request(fd, &request)) {
+        free_request(&request);
+        remove_fd_from_pollset(data, fd);
+        continue;
+      }
+
+      pthread_mutex_lock(&data->poll_set->mutex);
+      ssize_t actual_i = find_fd_in_pollset(data->poll_set, fd);
+      const char** active_user =
+          actual_i >= 0 ? &data->poll_set->active_users[actual_i] : nullptr;
+      pthread_mutex_unlock(&data->poll_set->mutex);
+
+      if (active_user == nullptr) {
+        free_request(&request);
+        continue;
+      }
+
+      Response response = {.data_size = 0, .code = -1, .data = nullptr};
+      int32_t code =
+          handle_request(&request, &response, data->users, data->seats,
+                         active_user);
+      if (code == -1) {
+        fprintf(stderr, "Invalid action received: %d\n", request.action);
+      }
+
+      bool sent = send_response(fd, &response);
+      free_request(&request);
+      free_response(&response);
+
+      if (!sent) {
+        remove_fd_from_pollset(data, fd);
+      }
+    }
   }
   pthread_exit(nullptr);
 }

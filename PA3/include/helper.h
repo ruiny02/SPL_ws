@@ -9,12 +9,23 @@ typedef void* nullptr_t;
 #endif
 
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <sys/types.h>
 #include "pa3_error.h"
 
 typedef uint64_t pa3_seat_t;
 extern bool sigint_received;
+
+#define ERROR_CHECK(EXPR)                                      \
+  do {                                                         \
+    if ((EXPR) < 0) {                                          \
+      perror(#EXPR);                                           \
+      exit(EXIT_FAILURE);                                      \
+    }                                                          \
+  } while (0)
 
 typedef enum {
   ACTION_INVALID = -1,

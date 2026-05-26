@@ -6,8 +6,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-// change to 10000 if you're facing an error here
-#define NUM_USERS 10'000
+#define NUM_USERS 10000
 
 #define MAXLINE 120
 #define CLIENTS_PER_THREAD 1000
@@ -36,6 +35,7 @@ typedef struct {
 
 typedef struct {
   struct pollfd set[CLIENTS_PER_THREAD];
+  const char* active_users[CLIENTS_PER_THREAD];
   size_t size;
   pthread_mutex_t mutex;
 } PollSet;
@@ -83,7 +83,8 @@ int32_t terminate_after_cleanup(int32_t (*pipe_fds)[2],
 int32_t handle_request(const Request* request,
                        Response* response,
                        Users* users,
-                       Seat* seats);
+                       Seat* seats,
+                       const char** active_user);
 
 bool check_stdin_for_termination();
 #endif

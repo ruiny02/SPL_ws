@@ -1,5 +1,20 @@
 #include "helper.h"
+#if __has_include(<argon2.h>)
 #include <argon2.h>
+#else
+#define ARGON2_OK 0
+int argon2id_hash_encoded(const uint32_t t_cost,
+                          const uint32_t m_cost,
+                          const uint32_t parallelism,
+                          const void* pwd,
+                          const size_t pwdlen,
+                          const void* salt,
+                          const size_t saltlen,
+                          const size_t hashlen,
+                          char* encoded,
+                          const size_t encodedlen);
+int argon2id_verify(const char* encoded, const void* pwd, const size_t pwdlen);
+#endif
 #include <fcntl.h>
 #include <sched.h>
 #include <stddef.h>
@@ -13,7 +28,10 @@
 // Password-related functions
 
 void generate_salt(uint8_t* salt) {
-  getrandom(salt, SALT_SIZE, 0);
+  if (getrandom(salt, SALT_SIZE, 0) != SALT_SIZE) {
+    perror("getrandom");
+    exit(EXIT_FAILURE);
+  }
 }
 
 void hash_password(const char* password, char* hashed_password) {
@@ -23,6 +41,7 @@ void hash_password(const char* password, char* hashed_password) {
   argon2id_hash_encoded(2, MEMORY_USAGE, 1, password, strlen(password), salt,
                         SALT_SIZE, HASH_SIZE, hash, HASHED_PASSWORD_SIZE);
   strncpy(hashed_password, hash, HASHED_PASSWORD_SIZE);
+  hashed_password[HASHED_PASSWORD_SIZE - 1] = '\0';
 }
 
 bool validate_password(const char* password_to_validate,
@@ -42,6 +61,10 @@ void setup_users(Users* users) {
   users->capacity = NUM_USERS;
   users->array = malloc(sizeof(User) * users->capacity);
   users->user_mutex = malloc(sizeof(pthread_mutex_t) * users->capacity);
+  if (users->array == nullptr || users->user_mutex == nullptr) {
+      perror("malloc");
+      exit(EXIT_FAILURE);
+  }
   for (int i = 0; i < NUM_USERS; i++) {
       users->array[i] = default_user();
       pthread_mutex_init(&users->user_mutex[i], NULL);
@@ -64,8 +87,17 @@ size_t add_user(Users* users,
   }
   size_t uid = users->size;
 
-  users->array[uid].username = strdup(username);
-  users->array[uid].hashed_password = strdup(hashed_password);
+  char* username_copy = strdup(username);
+  char* hashed_password_copy = strdup(hashed_password);
+  if (username_copy == nullptr || hashed_password_copy == nullptr) {
+      perror("strdup");
+      free(username_copy);
+      free(hashed_password_copy);
+      exit(EXIT_FAILURE);
+  }
+
+  users->array[uid].username = username_copy;
+  users->array[uid].hashed_password = hashed_password_copy;
   users->array[uid].logged_in = false;
   users->size++;
   return uid;
@@ -91,6 +123,10 @@ void free_users(Users* users) {
 
 Seat* default_seats() {
   Seat* seats = malloc(sizeof(Seat) * NUM_SEATS);
+  if (seats == nullptr) {
+    perror("malloc");
+    exit(EXIT_FAILURE);
+  }
 
   for (int i = 0; i < NUM_SEATS; i++) {
     seats[i].stats = (SeatStats){ .id = i + 1, .amount_of_times_booked = 0, .amount_of_times_canceled = 0 };
@@ -104,6 +140,10 @@ Seat* default_seats() {
 // Poll set-related functions
 PollSet* create_poll_set(int32_t self_pipe_fd) {
   PollSet* poll_set = calloc(1, sizeof(PollSet));
+  if (poll_set == nullptr) {
+    perror("calloc");
+    exit(EXIT_FAILURE);
+  }
   pthread_mutex_init(&poll_set->mutex, nullptr);
   poll_set->set[0].fd = self_pipe_fd;
   poll_set->set[0].events = POLLIN;
@@ -114,12 +154,16 @@ PollSet* create_poll_set(int32_t self_pipe_fd) {
 
 ssize_t find_suitable_pollset(ThreadData* data_arr, int32_t n_cores) {
   ssize_t min_i = -1;
+  size_t min_size = 0;
   for (int i = 0; i < n_cores; i++) {
+    pthread_mutex_lock(&data_arr[i].poll_set->mutex);
     size_t poll_set_size = data_arr[i].poll_set->size;
+    pthread_mutex_unlock(&data_arr[i].poll_set->mutex);
 
     if (poll_set_size < CLIENTS_PER_THREAD) {
-      if (min_i == -1 || poll_set_size < data_arr[min_i].poll_set->size) {
+      if (min_i == -1 || poll_set_size < min_size) {
         min_i = i;
+        min_size = poll_set_size;
       }
     }
   }
@@ -149,8 +193,17 @@ int32_t terminate_after_cleanup(int32_t (*pipe_fds)[2],
     close(pipe_fds[i][1]);
     pthread_join(tid_arr[i], nullptr);
     close(pipe_fds[i][0]);
-    pthread_mutex_destroy(&data_arr[i].poll_set->mutex);
-    free(data_arr[i].poll_set);
+
+    PollSet* poll_set = data_arr[i].poll_set;
+    for (size_t j = 1; j < poll_set->size; j++) {
+      close(poll_set->set[j].fd);
+      if (poll_set->active_users[j] != nullptr) {
+        free((void*)poll_set->active_users[j]);
+        poll_set->active_users[j] = nullptr;
+      }
+    }
+    pthread_mutex_destroy(&poll_set->mutex);
+    free(poll_set);
   }
 
   for (int i = 0; i < NUM_SEATS; i++) {
@@ -178,6 +231,8 @@ bool check_stdin_for_termination() {
   ssize_t n_read = read(STDIN_FILENO, buffer, sizeof(buffer));
   if (n_read < 0) {
     perror("read");
+    should_exit = true;
+  } else if (n_read == 0) {
     should_exit = true;
   } else {
     buffer[n_read - 1] = '\0';
