@@ -1,0 +1,12 @@
+[Unit]
+Description=Thread-safe echo daemon for SPL week14
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=%h/lectures/SPL_ws/week14/2021312344-w14 5000
+PIDFile=/tmp/2021312344-w14.pid
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
